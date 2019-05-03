@@ -19,13 +19,16 @@ struct Config {
 };
 const char *ConfigFileName = "/config.json";
 Config config; 
-
-EasyButton button(D3);
+String mqttTopicRelay1;
+String mqttTopicRelay2;
 
 ESP8266WebServer server(80);
 
+// MQTT
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+unsigned long lastMqttConnectionRetryTime;
+unsigned long mqttReconnectDelay = 30000;
 
 #define PinMeter1 D0
 #define PinMeter2 D1
@@ -36,8 +39,11 @@ PubSubClient mqttClient(espClient);
 #define PinLed1 D7
 #define PinLed2 D8
 
-bool relay1state = 0;
-bool relay2state = 0;
+bool relay1state = false;
+bool relay2state = false;
+
+EasyButton button1(PinButton1);
+EasyButton button2(PinButton2);
 
 // To store the "rise ups" from the flow meter pulses
 int counterMeter1 = 0;
@@ -59,6 +65,50 @@ void tick() {
   Serial.println("tick");
 }
 
+void toggleRelay(int id) {
+  uint8_t relayPin = 0;
+  uint8_t ledPin = 0;
+  String channel;
+  
+  switch(id) {
+    case 1:
+      relayPin = PinRelay1;
+      ledPin = PinLed1;
+      channel = mqttTopicRelay1;
+      break;
+    case 2:
+      relayPin = PinRelay2;
+      ledPin = PinLed2;
+      channel = mqttTopicRelay2;
+      break;
+    default:
+      return;
+      break;
+  }
+
+  Serial.println("Toggling relay...");
+
+  // Do the toggle
+  // HIGH (0x1) = OFF, LOW (0x0) = ON
+  int newValue = !digitalRead(relayPin);
+  Serial.println(newValue);
+  digitalWrite(relayPin, newValue); // relay
+  digitalWrite(ledPin, !newValue); // led
+  
+  if(id == 1) {
+    relay1state = !newValue;
+  } else if (id == 2) {
+    relay2state = !newValue;
+  }
+
+  // And publish MQTT update
+  if(mqttClient.connected()) {
+    //String channel = config.mqtt_channel + "/" + id + "/state";
+    String value = String(newValue);
+    mqttClient.publish(channel.c_str(), value.c_str());
+  }
+}
+
 void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
   // report to terminal for debug
   Serial.print("[MQTT] New message arrived in topic: ");
@@ -68,26 +118,36 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
     Serial.print((char)payload[i]);
   }
   Serial.println();
-/*
-  // check if we received our IN topic for state change
-  if (strcmp (TOPIC_IN_FEED, topic) == 0) {
-    // toggle output if we need to change state
-    if ((char)payload[0] == '1' && !isFeeding) {
-      Serial.print ("Toggling state!");
-      Servo_OpenClose();
+
+  // check if we received topics for state change 
+  if (strcmp (mqttTopicRelay1.c_str(), topic) == 0) {
+    Serial.print("Relay 1 state change requested");
+    if(
+        (payload[0] == '1' && relay1state == false) ||
+        (payload[0] == '0' && relay1state == true)
+      ) {
+        Serial.println(", state differs -> toggle");
+        toggleRelay(1);
+    } else {
+      Serial.println();
     }
-  }
-  // check for sync topic
-  else if (strcmp (TOPIC_IN_SYNC, topic) == 0) {
-    // we should get '1' as sync request
-    if ((char) payload[0] == '1') {
-      isSyncing = true;
+  } else if (strcmp (mqttTopicRelay2.c_str(), topic) == 0) {
+    Serial.print("Relay 2 state change requested");
+    if(
+        (payload[0] == '1' && relay2state == false) ||
+        (payload[0] == '0' && relay2state == true)
+      ) {
+          Serial.println(", state differs -> toggle");
+          toggleRelay(2);
+    } else {
+      Serial.println();
     }
+  }  else {
+    Serial.println("[MQTT] No match for any action.");
   }
-  */
 }
 
-void setupMqtt() {  
+void setupMqtt(int retries) {  
   if(mqttClient.connected()) {
     Serial.println("[MQTT] Disconnecting...");
     mqttClient.disconnect();
@@ -97,12 +157,17 @@ void setupMqtt() {
     return; // no server, no connection needed
   }
   
+  mqttTopicRelay1 = String(config.mqtt_channel + "1/state");
+  mqttTopicRelay2 = String(config.mqtt_channel + "2/state");
+
   mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
   mqttClient.setCallback(mqttSubscriptionCallback);
 
   int retryCount = 0;
-  while (!mqttClient.connected() && retryCount < 5) {
-      Serial.println("[MQTT] Connecting...");
+  while (!mqttClient.connected() && retryCount < retries) {
+      Serial.print("[MQTT] Connecting (retry #");
+      Serial.print(retryCount + 1);
+      Serial.println(")...");
   
       bool connectionState = false;
       if(config.mqtt_user.length() > 0) {
@@ -114,37 +179,37 @@ void setupMqtt() {
       if (connectionState) {
         Serial.println("[MQTT] Connected successfully.");  
       } else {
-        Serial.print("[MQTT] Connection failed with state ");
+        Serial.print("[MQTT] Connection failed with code: ");
         Serial.println(mqttClient.state());
         delay(2000);
       }
 
       retryCount++;
   }
-}
 
-void toggleRelay(int id) {
-  uint8_t relayPin = 0;
-  uint8_t ledPin = 0;
-  
-  switch(id) {
-    case 1:
-      relayPin = PinRelay1;
-      ledPin = PinLed1;
-      break;
-    case 2:
-      relayPin = PinRelay2;
-      ledPin = PinLed2;
-      break;
-    default:
-      return;
-      break;
+  // And subscribe to respective channels
+  if(mqttClient.connected()) {
+    Serial.println("[MQTT] Publishing current states of relays.");
+    String value1 = String(relay1state);
+    mqttClient.publish(mqttTopicRelay1.c_str(), value1.c_str());
+    String value2 = String(relay2state);
+    mqttClient.publish(mqttTopicRelay2.c_str(), value2.c_str());
+
+    Serial.println("[MQTT] Subscribing to the channels:");
+    Serial.print("  - ");
+    Serial.println(mqttTopicRelay1);
+    mqttClient.subscribe(mqttTopicRelay1.c_str());
+    
+    Serial.print("  - ");
+    Serial.println(mqttTopicRelay2);
+    mqttClient.subscribe(mqttTopicRelay2.c_str());
   }
 
-  // Do the toggle
-  int newValue = !digitalRead(relayPin);
-  digitalWrite(relayPin, newValue); // relay
-  digitalWrite(ledPin, newValue); // led
+  lastMqttConnectionRetryTime = millis();
+}
+
+void connectMqtt() {
+  setupMqtt(5); // By default try 5-times before gave up
 }
 
 // Gets called when WiFiManager enters configuration mode
@@ -153,8 +218,9 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   Serial.println(WiFi.softAPIP());
   //if you used auto generated SSID, print it
   Serial.println(myWiFiManager->getConfigPortalSSID());
+  
   //entered config mode, make led toggle faster
-  ticker.attach(0.2, tick);
+  //ticker.attach(0.2, tick);
 }
 
 String SendSettingsHTML(){
@@ -166,15 +232,18 @@ String SendSettingsHTML(){
   ptr +="<title>LED Control</title>\n";
   ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
   ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
-  ptr +=".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
+  ptr +=".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
   ptr +=".button-on {background-color: #1abc9c;}\n";
   ptr +=".button-on:active {background-color: #16a085;}\n";
   ptr +=".button-off {background-color: #34495e;}\n";
   ptr +=".button-off:active {background-color: #2c3e50;}\n";
+  ptr += "th {text-align: left; font-size: 12pt}";
+  ptr += "input { padding: 5px; font-size: 12pt}";
+  ptr +="table {margin: 0 auto}\n";
   ptr +="p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
   ptr +="</style>\n";
   ptr +="</head>\n";
-  ptr +="<body>\n";
+  ptr +="<body><div class=\"page\">\n";
   ptr +="<h1>Zavlazovac</h1>\n";
   ptr +="<h3>Settings</h3>\n";
   
@@ -210,10 +279,14 @@ String SendSettingsHTML(){
   "  </tr>\n"
 
   "  <tr>\n"
-  "    <td colspan=\"2\"><input type=\"submit\" value=\"Save Changes\"></td>\n"
+  "    <td colspan=\"2\"><input class=\"button\" type=\"submit\" value=\"Save Changes\"></td>\n"
   "  </tr>\n"
   "</table>\n";
   
+  ptr += "<div style=\"text-align: center\">"
+          "<a href=\"/\" class=\"button\">Back</a>"
+          "</div>";
+
   ptr +="</form>\n"
         "</body>\n"
         "</html>\n";
@@ -229,15 +302,16 @@ String SendHTML(){
   ptr +="<title>LED Control</title>\n";
   ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
   ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
-  ptr +=".button {display: block;width: 80px;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
+  ptr +=".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
   ptr +=".button-on {background-color: #1abc9c;}\n";
   ptr +=".button-on:active {background-color: #16a085;}\n";
   ptr +=".button-off {background-color: #34495e;}\n";
   ptr +=".button-off:active {background-color: #2c3e50;}\n";
+  ptr +=".page{margin-left: 20px; margin-right: 20px}\n";
   ptr +="p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
   ptr +="</style>\n";
   ptr +="</head>\n";
-  ptr +="<body>\n";
+  ptr +="<body>\n<div class=\"page\">";
   ptr +="<h1>Zavlazovac</h1>\n";
   
   ptr += "<div>";
@@ -258,7 +332,7 @@ String SendHTML(){
 
   ptr +="<hr>\n";
   ptr +="<a class=\"button\" href=\"/config\">Configuration</a>\n";
-  ptr +="</body>\n";
+  ptr +="</div></body>\n";
   ptr +="</html>\n";
   return ptr;
 }
@@ -270,11 +344,17 @@ void handle_pageConfig() {
 void handle_saveConfig() {
   // Save runtime data
   String arg = server.arg("mqtt_port");
+  arg.trim();
   config.mqtt_port = (arg.length() == 0 ? 1883 : arg.toInt());
   config.mqtt_server = server.arg("mqtt_server");
   config.mqtt_user = server.arg("mqtt_user"); 
   config.mqtt_password = server.arg("mqtt_password");
-  config.mqtt_channel = server.arg("mqtt_channel");
+  
+  String channel = server.arg("mqtt_channel");
+  channel.trim();
+  if(!channel.endsWith("/"))
+    channel += "/";
+  config.mqtt_channel = channel;
 
   Serial.println(config.mqtt_server);
 
@@ -301,11 +381,10 @@ void handle_saveConfig() {
   configFile.close();
 
   // Reconnect MQTT to reflect changes
-  setupMqtt();
+  connectMqtt();
 
-  server.sendHeader("Location", "/config");
-  server.sendHeader("X-Config-Saved", "1");
-  server.send(200, "text/html", "OK"); 
+  server.sendHeader("Location", "/config?saved=1", true);
+  server.send(303, "text/plain"); 
 }
 
 void handle_OnConnect() {
@@ -325,7 +404,7 @@ void handle_toggle() {
     toggleRelay(2);
 
   server.sendHeader("Location", "/");
-  server.send(200, "text/html", "OK");
+  server.send(303, "text/plain");
 }
 
 void handle_NotFound() {
@@ -333,8 +412,14 @@ void handle_NotFound() {
 }
 
 // Callback function to be called when the button is pressed.
-void onPressed() {
-	Serial.println("Button has been pressed!");
+void onPressed1() {
+	Serial.println("Button 1 has been pressed!");
+  toggleRelay(1);
+}
+
+void onPressed2() {
+	Serial.println("Button 2 has been pressed!");
+  toggleRelay(2);
 }
 
 void setup() {
@@ -346,15 +431,19 @@ void setup() {
   Serial.begin(115200);
 
   // Initialize the button.
-	button.begin();
-	// Add the callback function to be called when the button is pressed.
-	button.onPressed(onPressed);
-
+	button1.begin();
+  button1.onPressed(onPressed1);
+  
+  button2.begin();
+  button2.onPressed(onPressed2);
+	
   // Initialize GPIO PINs
   pinMode(PinLed1, OUTPUT);
   pinMode(PinLed2, OUTPUT);
   pinMode(PinRelay1, OUTPUT);
+  digitalWrite(PinRelay1, HIGH); // by default turn it off (=HIGH)
   pinMode(PinRelay2, OUTPUT);
+  digitalWrite(PinRelay2, HIGH); // by default turn it off (=HIGH)
   pinMode(PinMeter1, INPUT);
   pinMode(PinMeter2, INPUT);
   pinMode(PinButton1, INPUT);
@@ -384,7 +473,7 @@ void setup() {
   } 
 
   // Set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
-  //wifiManager.setAPCallback(configModeCallback);
+  wifiManager.setAPCallback(configModeCallback);
 
   //if you get here you have connected to the WiFi
   
@@ -420,7 +509,7 @@ void setup() {
   }
 
   // setup MQTT
-  setupMqtt();
+  connectMqtt();
 
   // Web server pages
   server.on("/", handle_OnConnect);
@@ -436,9 +525,15 @@ void loop() {
   // Process web server requests
   server.handleClient();
   
+  // MQTT reconnect if no connection with delay
+  if(!mqttClient.connected() && ((millis() - lastMqttConnectionRetryTime) > mqttReconnectDelay)) {
+    setupMqtt(1);
+  }
+  
   // Process MQTT communication
   mqttClient.loop();
   
   // Continuously read the status of the button. 
-	button.read();
+	button1.read();
+  button2.read();
 }
