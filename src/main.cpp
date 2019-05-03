@@ -45,16 +45,31 @@ bool relay2state = false;
 EasyButton button1(PinButton1);
 EasyButton button2(PinButton2);
 
+// The hall-effect flow sensor outputs approximately 4.5 pulses per second per
+// litre/minute of flow.
+float calibrationFactor = 4.5;
+
 // To store the "rise ups" from the flow meter pulses
-int counterMeter1 = 0;
-int counterMeter2 = 0;
+volatile byte pulseCounterMeter1 = 0;
+volatile byte pulseCounterMeter2 = 0;
+
+float flowRate1;
+float flowRate2;
+
+unsigned int flowMilliLitres1;
+unsigned int flowMilliLitres2;
+
+unsigned long totalMilliLitres1;
+unsigned long totalMilliLitres2;
+
+unsigned long oldTime;
 
 //Interrupt function, so that the counting of pulse “rise ups” dont interfere with the rest of the code  (attachInterrupt)
 void meter1_triggered() {
-  counterMeter1++;
+  pulseCounterMeter1++;
 }
 void meter2_triggered() {
-  counterMeter2++;
+  pulseCounterMeter2++;
 }
 
 void tick() {
@@ -450,8 +465,8 @@ void setup() {
   pinMode(PinButton2, INPUT);
   
   // And attach interrupt watches to meter PINs
-  attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, RISING);
-  attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, RISING);
+  attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
+  attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
 
   // !!! using internal LED blocks internal TTY output !!! On-board LED je připojena mezi TX1 = GPIO2 a VCC 
    //set led pin as output
@@ -536,4 +551,96 @@ void loop() {
   // Continuously read the status of the button. 
 	button1.read();
   button2.read();
+
+  // Process water flow sensors
+  if((millis() - oldTime) > 1000) // Only process counters once per second
+  {
+    // Disable the interrupt while calculating flow rate and sending the value to the host
+    detachInterrupt(PinMeter1);
+    detachInterrupt(PinMeter2);
+
+    // Because this loop may not complete in exactly 1 second intervals we calculate
+    // the number of milliseconds that have passed since the last execution and use
+    // that to scale the output. We also apply the calibrationFactor to scale the output
+    // based on the number of pulses per second per units of measure (litres/minute in
+    // this case) coming from the sensor.
+    flowRate1 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter1) / calibrationFactor;
+    flowRate2 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter1) / calibrationFactor;
+
+    // Note the time this processing pass was executed. Note that because we've
+    // disabled interrupts the millis() function won't actually be incrementing right
+    // at this point, but it will still return the value it was set to just before
+    // interrupts went away.
+    oldTime = millis();
+
+    // Divide the flow rate in litres/minute by 60 to determine how many litres have
+    // passed through the sensor in this 1 second interval, then multiply by 1000 to
+    // convert to millilitres.
+    flowMilliLitres1 = (flowRate1 / 60) * 1000;
+    flowMilliLitres2 = (flowRate2 / 60) * 1000;
+
+    // Add the millilitres passed in this second to the cumulative total
+    totalMilliLitres1 += flowMilliLitres1;
+    totalMilliLitres2 += flowMilliLitres2;
+
+    unsigned int frac;
+
+    // Print the flow rate for this second in litres / minute
+    Serial.print("[Valve 1] Flow rate: ");
+    Serial.print(int(flowRate1)); // Print the integer part of the variable
+    Serial.print("."); // Print the decimal point
+    // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+    frac = (flowRate1 - int(flowRate1)) * 10;
+    Serial.print(frac, DEC); // Print the fractional part of the variable
+    Serial.print("L/min");
+    // Print the number of litres flowed in this second
+    Serial.print("  Current Liquid Flowing: "); // Output separator
+    Serial.print(flowMilliLitres1);
+    Serial.print("mL/Sec");
+
+    // Print the cumulative total of litres flowed since starting
+    Serial.print("  Output Liquid Quantity: "); // Output separator
+    Serial.print(totalMilliLitres1);
+    Serial.println("mL");
+
+    // Print the flow rate for this second in litres / minute
+    Serial.print("[Valve 2] Flow rate: ");
+    Serial.print(int(flowRate2)); // Print the integer part of the variable
+    Serial.print("."); // Print the decimal point
+    // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+    frac = (flowRate2 - int(flowRate2)) * 10;
+    Serial.print(frac, DEC); // Print the fractional part of the variable
+    Serial.print("L/min");
+    // Print the number of litres flowed in this second
+    Serial.print("  Current Liquid Flowing: "); // Output separator
+    Serial.print(flowMilliLitres2);
+    Serial.print("mL/Sec");
+
+    // Print the cumulative total of litres flowed since starting
+    Serial.print("  Output Liquid Quantity: "); // Output separator
+    Serial.print(totalMilliLitres2);
+    Serial.println("mL");
+
+    if(mqttClient.connected()) {
+      if(flowRate1 > 0) {
+        String channel = String(config.mqtt_channel + "1/flow");
+        String value = String(flowRate1);
+        mqttClient.publish(channel.c_str(), value.c_str());
+      }
+
+      if(flowRate2 > 0) {
+        String channel = String(config.mqtt_channel + "2/flow");
+        String value = String(flowRate2);
+        mqttClient.publish(channel.c_str(), value.c_str());
+      }
+    }
+
+    // Reset the pulse counter so we can start incrementing again
+    pulseCounterMeter1 = 0;
+    pulseCounterMeter2 = 0;
+
+    // Enable the interrupt again now that we've finished sending output
+    attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
+    attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
+  }
 }
