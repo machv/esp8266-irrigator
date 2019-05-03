@@ -59,6 +59,70 @@ void tick() {
   Serial.println("tick");
 }
 
+void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
+  // report to terminal for debug
+  Serial.print("[MQTT] New message arrived in topic: ");
+  Serial.println(topic);
+  Serial.print("[MQTT] Received message: ");
+  for (uint i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+/*
+  // check if we received our IN topic for state change
+  if (strcmp (TOPIC_IN_FEED, topic) == 0) {
+    // toggle output if we need to change state
+    if ((char)payload[0] == '1' && !isFeeding) {
+      Serial.print ("Toggling state!");
+      Servo_OpenClose();
+    }
+  }
+  // check for sync topic
+  else if (strcmp (TOPIC_IN_SYNC, topic) == 0) {
+    // we should get '1' as sync request
+    if ((char) payload[0] == '1') {
+      isSyncing = true;
+    }
+  }
+  */
+}
+
+void setupMqtt() {  
+  if(mqttClient.connected()) {
+    Serial.println("[MQTT] Disconnecting...");
+    mqttClient.disconnect();
+  }
+
+  if(config.mqtt_server.length() == 0) {
+    return; // no server, no connection needed
+  }
+  
+  mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
+  mqttClient.setCallback(mqttSubscriptionCallback);
+
+  int retryCount = 0;
+  while (!mqttClient.connected() && retryCount < 5) {
+      Serial.println("[MQTT] Connecting...");
+  
+      bool connectionState = false;
+      if(config.mqtt_user.length() > 0) {
+        connectionState = mqttClient.connect("Zavlazovac", config.mqtt_user.c_str(), config.mqtt_password.c_str());
+      } else {
+        connectionState = mqttClient.connect("Zavlazovac");
+      }
+      
+      if (connectionState) {
+        Serial.println("[MQTT] Connected successfully.");  
+      } else {
+        Serial.print("[MQTT] Connection failed with state ");
+        Serial.println(mqttClient.state());
+        delay(2000);
+      }
+
+      retryCount++;
+  }
+}
+
 void toggleRelay(int id) {
   uint8_t relayPin = 0;
   uint8_t ledPin = 0;
@@ -271,67 +335,6 @@ void handle_NotFound() {
 // Callback function to be called when the button is pressed.
 void onPressed() {
 	Serial.println("Button has been pressed!");
-}
-
-void setupMqtt() {  
-  if(mqttClient.connected()) {
-    Serial.println("[MQTT] Disconnecting...");
-    mqttClient.disconnect();
-  }
-
-  if(config.mqtt_server.length() == 0) {
-    return; // no server, no connection needed
-  }
-  
-  mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
-  mqttClient.setCallback(Subscription_Callback);
-
-  while (!mqttClient.connected()) {
-      Serial.println("[MQTT] Connecting...");
-  
-      bool connectionState = false;
-      if(config.mqtt_user.length() > 0) {
-        connectionState = mqttClient.connect("Zavlazovac", config.mqtt_user.c_str(), config.mqtt_password.c_str());
-      } else {
-        connectionState = mqttClient.connect("Zavlazovac");
-      }
-      
-      if (connectionState) {
-        Serial.println("[MQTT] Connected successfully.");  
-      } else {
-        Serial.print("[MQTT] Connection failed with state ");
-        Serial.println(mqttClient.state());
-        delay(2000);
-      }
-  }
-}
-
-void Subscription_Callback(char* topic, byte* payload, unsigned int length) {
-  // report to terminal for debug
-  Serial.print("[MQTT] New message arrived in topic: ");
-  Serial.println(topic);
-  Serial.print("[MQTT] Received message: ");
-  for (uint i = 0; i < length; i++) {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-/*
-  // check if we received our IN topic for state change
-  if (strcmp (TOPIC_IN_FEED, topic) == 0) {
-    // toggle output if we need to change state
-    if ((char)payload[0] == '1' && !isFeeding) {
-      Serial.print ("Toggling state!");
-      Servo_OpenClose();
-    }
-  }
-  // check for sync topic
-  else if (strcmp (TOPIC_IN_SYNC, topic) == 0) {
-    // we should get '1' as sync request
-    if ((char) payload[0] == '1') {
-      isSyncing = true;
-    }
-  }
-  */
 }
 
 void setup() {
