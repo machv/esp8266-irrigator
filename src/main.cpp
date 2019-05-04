@@ -16,6 +16,8 @@ struct Config {
   String mqtt_user;
   String mqtt_password;
   String mqtt_channel;
+  String relay_1_name;
+  String relay_2_name;
 };
 const char *ConfigFileName = "/config.json";
 Config config; 
@@ -34,8 +36,8 @@ unsigned long mqttReconnectDelay = 30000;
 #define PinMeter2 D6
 #define PinRelay1 D2
 #define PinRelay2 D3
-#define PinButton1 D5
-#define PinButton2 D6
+#define PinButton1 D7
+#define PinButton2 D8
 #define PinLed1 D0
 #define PinLed2 D1
 
@@ -50,8 +52,8 @@ EasyButton button2(PinButton2);
 float calibrationFactor = 4.5;
 
 // To store the "rise ups" from the flow meter pulses
-volatile byte pulseCounterMeter1 = 0;
-volatile byte pulseCounterMeter2 = 0;
+volatile uint pulseCounterMeter1 = 0;
+volatile uint pulseCounterMeter2 = 0;
 
 float flowRate1;
 float flowRate2;
@@ -252,70 +254,98 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   //ticker.attach(0.2, tick);
 }
 
-String SendSettingsHTML(){
-  Serial.println("sending html");
+String SendStylesheetContent() {
+  String ptr;
 
-  String ptr = "<!DOCTYPE html> <html>\n";
-  ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr +="<title>LED Control</title>\n";
-  ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
+  ptr +="html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
   ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
   ptr +=".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
   ptr +=".button-on {background-color: #1abc9c;}\n";
   ptr +=".button-on:active {background-color: #16a085;}\n";
   ptr +=".button-off {background-color: #34495e;}\n";
   ptr +=".button-off:active {background-color: #2c3e50;}\n";
-  ptr += "th {text-align: left; font-size: 12pt}";
+  ptr +=".settings-cell {text-align: center; font-size: 14pt; padding: 4px; padding-top: 20px}\n";
+  ptr += "th, td {text-align: left; font-size: 12pt}";
   ptr += "input { padding: 5px; font-size: 12pt}";
-  ptr +="table {margin: 0 auto}\n";
+  ptr +="table {margin: 0 auto; margin-bottom: 20px}\n";
   ptr +="p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
-  ptr +="</style>\n";
-  ptr +="</head>\n";
-  ptr +="<body><div class=\"page\">\n";
-  ptr +="<h1>Zavlazovac</h1>\n";
-  ptr +="<h3>Settings</h3>\n";
+
+  return ptr;
+}
+
+void handle_stylesheetFile() {
+  server.send(200, "text/css", SendStylesheetContent()); 
+}
+
+String SendSettingsHTML(){
+  Serial.println("Sending Config HTML.");
+
+  String ptr = "<!DOCTYPE html> <html>\n";
+  ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
+  ptr += "<title>Zavlažovač / Settings</title>\n";
+  ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
+  ptr += "</head>\n";
+  ptr += "<body><div class=\"page\">\n";
+  ptr += "<h1>Zavlažovač</h1>\n";
+  ptr += "<h2>Settings</h2>\n";
   
-  if(server.hasHeader("X-Config-Saved")) {
-    ptr += "<div style=\"text-align: center; margin: 20px; font-weight: bold\">Configuration saved.</div>";
+  if(server.hasArg("saved")) {
+    ptr += "<div style=\"text-align: center; margin: 20px; font-weight: bold\">Configuration was saved.</div>";
   }
 
   ptr +="<form method=\"post\" enctype=\"application/x-www-form-urlencoded\">\n";
-  ptr +="<table>\n"
+  ptr +="<table>\n"  
+   "<tr>"
+    "<th colspan=\"2\" class=\"settings-cell\">Relays</th>"
+    "</tr>"
+    "  <tr>\n"
+    "    <th>Relay 1 Name</th>\n"
+    "    <td><input type=\"text\" name=\"relay_1_name\" value=\"" + (config.relay_1_name) + "\"></td>\n"
+    "  </tr>\n"
+
+    "  <tr>\n"
+    "    <th>Relay 2 Name</th>\n"
+    "    <td><input type=\"text\" name=\"relay_2_name\" value=\"" + (config.relay_2_name) + "\"></td>\n"
+    "  </tr>\n"
+
+
+  "<tr>"
+  "<th colspan=\"2\" class=\"settings-cell\">MQTT Settings</th>"
+  "</tr>"
   "  <tr>\n"
-  "    <th>MQTT Server</th>\n"
+  "    <th>Server</th>\n"
   "    <td><input type=\"text\" name=\"mqtt_server\" value=\"" + (config.mqtt_server) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
-  "    <th>MQTT Port</th>\n"
+  "    <th>Port</th>\n"
   "    <td><input type=\"text\" name=\"mqtt_port\" value=\"" + (config.mqtt_port) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
-  "    <th>MQTT User</th>\n"
+  "    <th>User</th>\n"
   "    <td><input type=\"text\" name=\"mqtt_user\" value=\"" + (config.mqtt_user) + "\"></td>\n"
   "  </tr>\n"
 
     "  <tr>\n"
-  "    <th>MQTT Password</th>\n"
+  "    <th>Password</th>\n"
   "    <td><input type=\"password\" name=\"mqtt_password\" value=\"" + (config.mqtt_password) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
-  "    <th>MQTT Channel</th>\n"
+  "    <th>Channel prefix</th>\n"
   "    <td><input type=\"text\" name=\"mqtt_channel\" value=\"" + (config.mqtt_channel) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
-  "    <td colspan=\"2\"><input class=\"button\" type=\"submit\" value=\"Save Changes\"></td>\n"
+  "    <th class=\"settings-cell\" colspan=\"2\"><input class=\"button\" type=\"submit\" value=\"Save Changes\"></th>\n"
+  "  </tr>\n"
+
+  "  <tr>\n"
+  "    <th class=\"settings-cell\" colspan=\"2\"><a href=\"/\" class=\"button\">Back</a></th>\n"
   "  </tr>\n"
   "</table>\n";
   
-  ptr += "<div style=\"text-align: center\">"
-          "<a href=\"/\" class=\"button\">Back</a>"
-          "</div>";
-
   ptr +="</form>\n"
         "</body>\n"
         "</html>\n";
@@ -324,39 +354,92 @@ String SendSettingsHTML(){
 }
 
 String SendHTML(){
-  Serial.println("sending html");
+  Serial.println("Sending homepage HTML.");
 
   String ptr = "<!DOCTYPE html> <html>\n";
-  ptr +="<head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr +="<title>LED Control</title>\n";
-  ptr +="<style>html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
-  ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
-  ptr +=".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
-  ptr +=".button-on {background-color: #1abc9c;}\n";
-  ptr +=".button-on:active {background-color: #16a085;}\n";
-  ptr +=".button-off {background-color: #34495e;}\n";
-  ptr +=".button-off:active {background-color: #2c3e50;}\n";
-  ptr +=".page{margin-left: 20px; margin-right: 20px}\n";
-  ptr +="p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
-  ptr +="</style>\n";
-  ptr +="</head>\n";
-  ptr +="<body>\n<div class=\"page\">";
-  ptr +="<h1>Zavlazovac</h1>\n";
+  ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
+  ptr += "<title>Zavlažovač</title>\n";
+  ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
+  ptr += "</head>\n";
+  ptr += "<body>\n<div class=\"page\">";
+  ptr += "<h1>Zavlažovač</h1>\n";
   
+  unsigned int frac;
+
   ptr += "<div>";
+  ptr += "<h2>" + config.relay_1_name + "</h2>";
+  ptr += "<table>"
+        "<tr>"
+        "<th>Flow rate:</th>"
+        "<td>";
+  ptr += int(flowRate1); // Print the integer part of the variable
+  ptr += "."; // Print the decimal point
+  // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+  frac = (flowRate1 - int(flowRate1)) * 10;
+  ptr += frac; // Print the fractional part of the variable
+  ptr += " L/min</td>"
+        "</tr>"
+        "<tr>"
+        "<th>Current Liquid Flowing:</th>"
+        "<td>";
+  ptr += flowMilliLitres1;
+  ptr += " mL/Sec</td>"
+        "</tr>"
+        "<tr>"
+        "<th>Output Liquid Quantity:</th>"
+        "<td>";
+  ptr += totalMilliLitres1;
+  ptr += " mL</td>"
+        "</tr>"
+        "<tr>"
+        "<td colspan=\"2\" class=\"settings-cell\">";
+
   if(relay1state == true) {
-    ptr += "<a class=\"button button-on\" href=\"/toggle?id=1\">Turn OFF relay 1</a>";
+    ptr += "<a class=\"button button-on\" href=\"/toggle?id=1\">Turn OFF</a>";
   } else {
-    ptr += "<a class=\"button button-off\" href=\"/toggle?id=1\">Turn ON relay 1</a>";
+    ptr += "<a class=\"button button-off\" href=\"/toggle?id=1\">Turn ON</a>";
   }
+  ptr += "</td></tr>";
+  ptr += "</table>";
   ptr += "</div>";
 
   ptr += "<div>";
+  ptr += "<h2>" + config.relay_2_name + "</h2>";
+  ptr += "<table>"
+        "<tr>"
+        "<th>Flow rate:</th>"
+        "<td>";
+  ptr += int(flowRate2); // Print the integer part of the variable
+  ptr += "."; // Print the decimal point
+  // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+  frac = (flowRate2 - int(flowRate2)) * 10;
+  ptr += frac; // Print the fractional part of the variable
+  ptr += " L/min</td>"
+        "</tr>"
+        "<tr>"
+        "<th>Current Liquid Flowing:</th>"
+        "<td>";
+  ptr += flowMilliLitres2;
+  ptr += " mL/Sec</td>"
+        "</tr>"
+        "<tr>"
+        "<th>Output Liquid Quantity:</th>"
+        "<td>";
+  ptr += totalMilliLitres2;
+  ptr += " mL</td>"
+        "</tr>"
+        "<tr>"
+        "<td colspan=\"2\" class=\"settings-cell\">";
+        
+
   if(relay2state == true) {
-    ptr += "<a class=\"button button-on\" href=\"/toggle?id=2\">Turn OFF relay 2</a>";
+    ptr += "<a class=\"button button-on\" href=\"/toggle?id=2\">Turn OFF</a>";
   } else {
-    ptr += "<a class=\"button button-off\" href=\"/toggle?id=2\">Turn ON relay 2</a>";
+    ptr += "<a class=\"button button-off\" href=\"/toggle?id=2\">Turn ON</a>";
   }
+  ptr += "</td></tr>";
+  ptr += "</table>";
+
   ptr += "</div>";
 
   ptr +="<hr>\n";
@@ -378,6 +461,8 @@ void handle_saveConfig() {
   config.mqtt_server = server.arg("mqtt_server");
   config.mqtt_user = server.arg("mqtt_user"); 
   config.mqtt_password = server.arg("mqtt_password");
+  config.relay_1_name = server.arg("relay_1_name");
+  config.relay_2_name = server.arg("relay_2_name");
   
   String channel = server.arg("mqtt_channel");
   channel.trim();
@@ -400,10 +485,12 @@ void handle_saveConfig() {
   jsonDocument["mqtt_user"] = config.mqtt_user;
   jsonDocument["mqtt_password"] = config.mqtt_password;
   jsonDocument["mqtt_channel"] = config.mqtt_channel;
+  jsonDocument["relay_1_name"] = config.relay_1_name;
+  jsonDocument["relay_2_name"] = config.relay_2_name;
 
   // Serialize JSON to file
   if (serializeJson(jsonDocument, configFile) == 0) {
-    Serial.println(F("Failed to write to file"));
+    Serial.println(F("Failed to write settings file."));
   }
 
   // Close the file
@@ -442,12 +529,12 @@ void handle_NotFound() {
 
 // Callback function to be called when the button is pressed.
 void onPressed1() {
-	Serial.println("Button 1 has been pressed!");
+	Serial.println("Button 1 has been pressed.");
   toggleRelay(1);
 }
 
 void onPressed2() {
-	Serial.println("Button 2 has been pressed!");
+	Serial.println("Button 2 has been pressed.");
   toggleRelay(2);
 }
 
@@ -475,8 +562,6 @@ void setup() {
   digitalWrite(PinRelay2, HIGH); // by default turn it off (=HIGH)
   pinMode(PinMeter1, INPUT);
   pinMode(PinMeter2, INPUT);
-  //pinMode(PinButton1, INPUT); // buttons handled by EasyButton
-  //pinMode(PinButton2, INPUT); // buttons handled by EasyButton
   
   // And attach interrupt watches to meter PINs
   attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
@@ -512,7 +597,7 @@ void setup() {
 
   // init values from file system
   if (SPIFFS.begin()) {
-    Serial.println("mounted file system");
+    Serial.println("File system is mounted.");
 
     // read config file
     if(SPIFFS.exists(ConfigFileName))
@@ -532,6 +617,14 @@ void setup() {
         config.mqtt_user = json["mqtt_user"].as<String>();
         config.mqtt_password = json["mqtt_password"].as<String>();
         config.mqtt_channel = json["mqtt_channel"].as<String>();
+        config.relay_1_name = json["relay_1_name"].as<String>();
+        if(config.relay_1_name.length() == 0) {
+          config.relay_1_name = "Relay 1";
+        }
+        config.relay_2_name = json["relay_2_name"].as<String>();
+        if(config.relay_2_name.length() == 0) {
+          config.relay_2_name = "Relay 2";
+        }
 
         configFile.close();
     }
@@ -545,6 +638,7 @@ void setup() {
   server.on("/config", HTTP_GET, handle_pageConfig);
   server.on("/config", HTTP_POST, handle_saveConfig);
   server.on("/toggle", handle_toggle);
+  server.on("/style.css", handle_stylesheetFile);
   server.onNotFound(handle_NotFound);  
   server.begin();
   Serial.println("HTTP server started");
@@ -565,7 +659,7 @@ void loop() {
   // Continuously read the status of the button. 
 	button1.read();
   button2.read();
-/*
+
   // Process water flow sensors
   if((millis() - oldTime) > 1000) // Only process counters once per second
   {
@@ -579,7 +673,7 @@ void loop() {
     // based on the number of pulses per second per units of measure (litres/minute in
     // this case) coming from the sensor.
     flowRate1 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter1) / calibrationFactor;
-    flowRate2 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter1) / calibrationFactor;
+    flowRate2 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter2) / calibrationFactor;
 
     // Note the time this processing pass was executed. Note that because we've
     // disabled interrupts the millis() function won't actually be incrementing right
@@ -599,53 +693,65 @@ void loop() {
 
     unsigned int frac;
 
-    // Print the flow rate for this second in litres / minute
-    Serial.print("[Valve 1] Flow rate: ");
-    Serial.print(int(flowRate1)); // Print the integer part of the variable
-    Serial.print("."); // Print the decimal point
-    // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-    frac = (flowRate1 - int(flowRate1)) * 10;
-    Serial.print(frac, DEC); // Print the fractional part of the variable
-    Serial.print("L/min");
-    // Print the number of litres flowed in this second
-    Serial.print("  Current Liquid Flowing: "); // Output separator
-    Serial.print(flowMilliLitres1);
-    Serial.print("mL/Sec");
+    if(flowRate1 > 0) {
+      // Print the flow rate for this second in litres / minute
+      Serial.print("[Valve 1] Flow rate: ");
+      Serial.print(int(flowRate1)); // Print the integer part of the variable
+      Serial.print("."); // Print the decimal point
+      // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+      frac = (flowRate1 - int(flowRate1)) * 10;
+      Serial.print(frac, DEC); // Print the fractional part of the variable
+      Serial.print("L/min");
+      // Print the number of litres flowed in this second
+      Serial.print("  Current Liquid Flowing: "); // Output separator
+      Serial.print(flowMilliLitres1);
+      Serial.print("mL/Sec");
 
-    // Print the cumulative total of litres flowed since starting
-    Serial.print("  Output Liquid Quantity: "); // Output separator
-    Serial.print(totalMilliLitres1);
-    Serial.println("mL");
+      // Print the cumulative total of litres flowed since starting
+      Serial.print("  Output Liquid Quantity: "); // Output separator
+      Serial.print(totalMilliLitres1);
+      Serial.println("mL");
+    }
 
-    // Print the flow rate for this second in litres / minute
-    Serial.print("[Valve 2] Flow rate: ");
-    Serial.print(int(flowRate2)); // Print the integer part of the variable
-    Serial.print("."); // Print the decimal point
-    // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-    frac = (flowRate2 - int(flowRate2)) * 10;
-    Serial.print(frac, DEC); // Print the fractional part of the variable
-    Serial.print("L/min");
-    // Print the number of litres flowed in this second
-    Serial.print("  Current Liquid Flowing: "); // Output separator
-    Serial.print(flowMilliLitres2);
-    Serial.print("mL/Sec");
+    if(flowRate2) {
+      // Print the flow rate for this second in litres / minute
+      Serial.print("[Valve 2] Flow rate: ");
+      Serial.print(int(flowRate2)); // Print the integer part of the variable
+      Serial.print("."); // Print the decimal point
+      // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+      frac = (flowRate2 - int(flowRate2)) * 10;
+      Serial.print(frac, DEC); // Print the fractional part of the variable
+      Serial.print("L/min");
+      // Print the number of litres flowed in this second
+      Serial.print("  Current Liquid Flowing: "); // Output separator
+      Serial.print(flowMilliLitres2);
+      Serial.print("mL/Sec");
 
-    // Print the cumulative total of litres flowed since starting
-    Serial.print("  Output Liquid Quantity: "); // Output separator
-    Serial.print(totalMilliLitres2);
-    Serial.println("mL");
+      // Print the cumulative total of litres flowed since starting
+      Serial.print("  Output Liquid Quantity: "); // Output separator
+      Serial.print(totalMilliLitres2);
+      Serial.println("mL");
+    }
 
     if(mqttClient.connected()) {
       if(flowRate1 > 0) {
-        String channel = String(config.mqtt_channel + "1/flow");
-        String value = String(flowRate1);
-        mqttClient.publish(channel.c_str(), value.c_str());
+        String channelCurrent = String(config.mqtt_channel + "1/currentFlow");
+        String valueCurrent = String(flowRate1);
+        mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
+
+        String channelTotal = String(config.mqtt_channel + "1/totalFlow");
+        String valueTotal = String(totalMilliLitres1);
+        mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
       }
 
       if(flowRate2 > 0) {
-        String channel = String(config.mqtt_channel + "2/flow");
-        String value = String(flowRate2);
-        mqttClient.publish(channel.c_str(), value.c_str());
+        String channelCurrent = String(config.mqtt_channel + "2/currentFlow");
+        String valueCurrent = String(flowRate2);
+        mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
+
+        String channelTotal = String(config.mqtt_channel + "2/totalFlow");
+        String valueTotal = String(totalMilliLitres2);
+        mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
       }
     }
 
@@ -657,5 +763,5 @@ void loop() {
     attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
     attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
   }
-  */
+  
 }
