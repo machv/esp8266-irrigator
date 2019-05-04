@@ -30,14 +30,14 @@ PubSubClient mqttClient(espClient);
 unsigned long lastMqttConnectionRetryTime;
 unsigned long mqttReconnectDelay = 30000;
 
-#define PinMeter1 D0
-#define PinMeter2 D1
+#define PinMeter1 D5
+#define PinMeter2 D6
 #define PinRelay1 D2
 #define PinRelay2 D3
 #define PinButton1 D5
 #define PinButton2 D6
-#define PinLed1 D7
-#define PinLed2 D8
+#define PinLed1 D0
+#define PinLed2 D1
 
 bool relay1state = false;
 bool relay2state = false;
@@ -67,9 +67,15 @@ unsigned long oldTime;
 //Interrupt function, so that the counting of pulse “rise ups” dont interfere with the rest of the code  (attachInterrupt)
 void meter1_triggered() {
   pulseCounterMeter1++;
+
+  Serial.printf("Trigger 1, current count = %d", pulseCounterMeter1);
+  Serial.println();
 }
 void meter2_triggered() {
   pulseCounterMeter2++;
+
+  Serial.printf("Trigger 2, current count = %d", pulseCounterMeter2);
+  Serial.println();
 }
 
 void tick() {
@@ -101,12 +107,13 @@ void toggleRelay(int id) {
       break;
   }
 
-  Serial.println("Toggling relay...");
+  int currentValue = digitalRead(relayPin);
+  int newValue = !currentValue;
+
+  Serial.printf("Toggling relay #%d from %i to %i", id, currentValue, newValue);
 
   // Do the toggle
   // HIGH (0x1) = OFF, LOW (0x0) = ON
-  int newValue = !digitalRead(relayPin);
-  Serial.println(newValue);
   digitalWrite(relayPin, newValue); // relay
   digitalWrite(ledPin, !newValue); // led
   
@@ -116,19 +123,22 @@ void toggleRelay(int id) {
     relay2state = !newValue;
   }
 
+  Serial.println();
+
   // And publish MQTT update
   if(mqttClient.connected()) {
-    //String channel = config.mqtt_channel + "/" + id + "/state";
-    String value = String(newValue);
+    Serial.println("[MQTT] Publishing updated state after toggle.");
+
+    String value = String(!newValue); // actual state is negation of the PIN state
     mqttClient.publish(channel.c_str(), value.c_str());
   }
 }
 
 void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
   // report to terminal for debug
-  Serial.print("[MQTT] New message arrived in topic: ");
-  Serial.println(topic);
-  Serial.print("[MQTT] Received message: ");
+  Serial.print("[MQTT] Received message in topic '");
+  Serial.print(topic);
+  Serial.print("' with content: ");
   for (uint i = 0; i < length; i++) {
     Serial.print((char)payload[i]);
   }
@@ -136,12 +146,14 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
 
   // check if we received topics for state change 
   if (strcmp (mqttTopicRelay1.c_str(), topic) == 0) {
-    Serial.print("Relay 1 state change requested");
+    Serial.printf("Relay 1 state change requested to %c", payload[0]);
     if(
         (payload[0] == '1' && relay1state == false) ||
         (payload[0] == '0' && relay1state == true)
       ) {
-        Serial.println(", state differs -> toggle");
+        Serial.print(", current state ");
+        Serial.print(relay1state);
+        Serial.println(" differs -> toggle");
         toggleRelay(1);
     } else {
       Serial.println();
@@ -152,7 +164,9 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
         (payload[0] == '1' && relay2state == false) ||
         (payload[0] == '0' && relay2state == true)
       ) {
-          Serial.println(", state differs -> toggle");
+           Serial.print(", current state ");
+        Serial.print(relay2state);
+        Serial.println(" differs -> toggle");
           toggleRelay(2);
     } else {
       Serial.println();
@@ -461,8 +475,8 @@ void setup() {
   digitalWrite(PinRelay2, HIGH); // by default turn it off (=HIGH)
   pinMode(PinMeter1, INPUT);
   pinMode(PinMeter2, INPUT);
-  pinMode(PinButton1, INPUT);
-  pinMode(PinButton2, INPUT);
+  //pinMode(PinButton1, INPUT); // buttons handled by EasyButton
+  //pinMode(PinButton2, INPUT); // buttons handled by EasyButton
   
   // And attach interrupt watches to meter PINs
   attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
@@ -551,7 +565,7 @@ void loop() {
   // Continuously read the status of the button. 
 	button1.read();
   button2.read();
-
+/*
   // Process water flow sensors
   if((millis() - oldTime) > 1000) // Only process counters once per second
   {
@@ -643,4 +657,5 @@ void loop() {
     attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
     attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
   }
+  */
 }
