@@ -17,12 +17,15 @@ struct Config {
   String mqtt_password;
   String mqtt_channel;
   String relay_1_name;
+  int relay_1_timeout;
   String relay_2_name;
+  int relay_2_timeout;
 };
 const char *ConfigFileName = "/config.json";
 Config config; 
-String mqttTopicRelay1;
-String mqttTopicRelay2;
+
+unsigned long relay1timeoutWhen;
+unsigned long relay2timeoutWhen;
 
 ESP8266WebServer server(80);
 
@@ -31,15 +34,18 @@ WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 unsigned long lastMqttConnectionRetryTime;
 unsigned long mqttReconnectDelay = 30000;
+String mqttTopicRelay1;
+String mqttTopicRelay2;
 
 #define PinMeter1 D5
 #define PinMeter2 D6
 #define PinRelay1 D2
 #define PinRelay2 D3
 #define PinButton1 D7
-#define PinButton2 D8
+#define PinButton2 D4
 #define PinLed1 D0
 #define PinLed2 D1
+#define PinLedStatus D8
 
 bool relay1state = false;
 bool relay2state = false;
@@ -80,12 +86,12 @@ void meter2_triggered() {
   Serial.println();
 }
 
-void tick() {
+void tickStatusLed() {
   //toggle state
-  //int state = digitalRead(LED_BUILTIN);  // get the current state of GPIO1 pin
-  //digitalWrite(LED_BUILTIN, !state);     // set pin to the opposite state
+  int state = digitalRead(PinLedStatus);  // get the current state of GPIO1 pin
+  digitalWrite(PinLedStatus, !state);     // set pin to the opposite state
 
-  Serial.println("tick");
+  Serial.println("Status LED tick.");
 }
 
 void toggleRelay(int id) {
@@ -121,8 +127,21 @@ void toggleRelay(int id) {
   
   if(id == 1) {
     relay1state = !newValue;
+
+    if(relay1state && config.relay_1_timeout > 0) { // if enabling and is timeout set, activate
+      relay1timeoutWhen = millis() + (config.relay_1_timeout * 60 * 1000); // timeout in settings is in minutes
+    } else {
+      relay1timeoutWhen = 0;
+    }
+
   } else if (id == 2) {
     relay2state = !newValue;
+
+    if(relay2state && config.relay_2_timeout > 0) { // if enabling and is timeout set, activate
+      relay2timeoutWhen = millis() + (config.relay_2_timeout * 60 * 1000); // timeout in settings is in minutes
+    } else {
+      relay2timeoutWhen = 0;
+    }
   }
 
   Serial.println();
@@ -251,30 +270,59 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   Serial.println(myWiFiManager->getConfigPortalSSID());
   
   //entered config mode, make led toggle faster
-  //ticker.attach(0.2, tick);
+  ticker.attach(0.2, tickStatusLed);
 }
 
 String SendStylesheetContent() {
   String ptr;
 
-  ptr +="html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
-  ptr +="body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 50px;}\n";
-  ptr +=".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 35px;cursor: pointer;border-radius: 4px;}\n";
-  ptr +=".button-on {background-color: #1abc9c;}\n";
-  ptr +=".button-on:active {background-color: #16a085;}\n";
-  ptr +=".button-off {background-color: #34495e;}\n";
-  ptr +=".button-off:active {background-color: #2c3e50;}\n";
-  ptr +=".settings-cell {text-align: center; font-size: 14pt; padding: 4px; padding-top: 20px}\n";
+  ptr += "html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
+  ptr += "body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 5px;}\n";
+  ptr += ".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 15px;cursor: pointer;border-radius: 4px;}\n";
+  ptr += ".button-on {background-color: #1abc9c;}\n";
+  ptr += ".button-on:active {background-color: #16a085;}\n";
+  ptr += ".button-off {background-color: #34495e;}\n";
+  ptr += ".button-off:active {background-color: #2c3e50;}\n";
+  ptr += ".settings-cell {text-align: center; font-size: 14pt; padding: 4px; padding-top: 20px}\n";
   ptr += "th, td {text-align: left; font-size: 12pt}";
   ptr += "input { padding: 5px; font-size: 12pt}";
-  ptr +="table {margin: 0 auto; margin-bottom: 20px}\n";
-  ptr +="p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
+  ptr += "table {margin: 0 auto; margin-bottom: 20px}\n";
+  ptr += ".small { font-size: 75%}\n";
+  ptr += "p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
 
   return ptr;
 }
 
 void handle_stylesheetFile() {
   server.send(200, "text/css", SendStylesheetContent()); 
+}
+
+String SendJavascriptContent() {
+  String str = "";
+
+  str += "function startTimer(duration, display) {\n"
+    "var timer = duration, minutes, seconds;\n"
+    "setInterval(function () {\n"
+    "    minutes = parseInt(timer / 60, 10)\n"
+    "    seconds = parseInt(timer % 60, 10);\n"
+    "\n"
+    "    minutes = minutes < 10 ? \"0\" + minutes : minutes;\n"
+    "    seconds = seconds < 10 ? \"0\" + seconds : seconds;\n"
+    "\n"
+    "    display.textContent = minutes + \":\" + seconds;\n"
+    "\n"
+    "    if (--timer < 0) {\n"
+    "        display.textContent = \"\";\n"         
+    "    //    timer = duration;\n"
+    "    }\n"
+    "}, 1000);\n"
+    "}\n";
+
+  return str;
+}
+
+void handle_jsFile() {
+  server.send(200, "text/javascript", SendJavascriptContent());
 }
 
 String SendSettingsHTML(){
@@ -295,19 +343,33 @@ String SendSettingsHTML(){
 
   ptr +="<form method=\"post\" enctype=\"application/x-www-form-urlencoded\">\n";
   ptr +="<table>\n"  
-   "<tr>"
-    "<th colspan=\"2\" class=\"settings-cell\">Relays</th>"
+    "<tr>"
+    " <th colspan=\"2\" class=\"settings-cell\">Relay 1</th>"
     "</tr>"
+    
     "  <tr>\n"
-    "    <th>Relay 1 Name</th>\n"
+    "    <th>Name</th>\n"
     "    <td><input type=\"text\" name=\"relay_1_name\" value=\"" + (config.relay_1_name) + "\"></td>\n"
     "  </tr>\n"
+    
+    "  <tr>\n"
+    "    <th>Timeout</th>\n"
+    "    <td><input type=\"text\" name=\"relay_1_timeout\" value=\"" + (config.relay_1_timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
+    "  </tr>\n"
+
+    "<tr>"
+    " <th colspan=\"2\" class=\"settings-cell\">Relay 2</th>"
+    "</tr>"
 
     "  <tr>\n"
-    "    <th>Relay 2 Name</th>\n"
+    "    <th>Name</th>\n"
     "    <td><input type=\"text\" name=\"relay_2_name\" value=\"" + (config.relay_2_name) + "\"></td>\n"
     "  </tr>\n"
 
+    "  <tr>\n"
+    "    <th>Timeout</th>\n"
+    "    <td><input type=\"text\" name=\"relay_2_timeout\" value=\"" + (config.relay_2_timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
+    "  </tr>\n"
 
   "<tr>"
   "<th colspan=\"2\" class=\"settings-cell\">MQTT Settings</th>"
@@ -353,6 +415,20 @@ String SendSettingsHTML(){
   return ptr;
 }
 
+// t is time in seconds = millis()/1000;
+char * millisToString(unsigned long millis)
+{
+  unsigned long seconds = millis / 1000;
+  static char str[12];
+  long h = seconds / 3600;
+  seconds = seconds % 3600;
+  int m = seconds / 60;
+  int s = seconds % 60;
+ sprintf(str, "%02ld:%02d:%02d", h, m, s);
+ 
+ return str;
+}
+
 String SendHTML(){
   Serial.println("Sending homepage HTML.");
 
@@ -360,6 +436,34 @@ String SendHTML(){
   ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
   ptr += "<title>Zavlažovač</title>\n";
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
+  ptr += "<script type=\"text/javascript\" src=\"scripts.js\"></script>\n";
+  
+  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0) {
+    unsigned long remainingSecondsTimer1 = (relay1timeoutWhen - millis()) / 1000;
+    ptr += "<script type=\"text/javascript\">\n"
+          "window.onload = function () {\n"
+          "  var timerSeconds = ";
+    ptr += remainingSecondsTimer1;
+    ptr += ";\n"
+          "  var display = document.querySelector('#relay_1_timer');\n"
+          "   startTimer(timerSeconds, display);\n"
+          "};\n"
+          "</script>";
+  }
+
+  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0) {
+    unsigned long remainingSecondsTimer2 = (relay2timeoutWhen - millis()) / 1000;
+    ptr += "<script type=\"text/javascript\">\n"
+          "window.onload = function () {\n"
+          "  var timerSeconds = ";
+    ptr += remainingSecondsTimer2;
+    ptr += ";\n"
+          "  var display = document.querySelector('#relay_2_timer');\n"
+          "   startTimer(timerSeconds, display);\n"
+          "};\n"
+          "</script>";
+  }
+
   ptr += "</head>\n";
   ptr += "<body>\n<div class=\"page\">";
   ptr += "<h1>Zavlažovač</h1>\n";
@@ -368,8 +472,31 @@ String SendHTML(){
 
   ptr += "<div>";
   ptr += "<h2>" + config.relay_1_name + "</h2>";
-  ptr += "<table>"
-        "<tr>"
+
+  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0) {
+    ptr += "<h3 id=\"relay_1_timer\"></h3>";
+  }
+
+  ptr += "<table>";
+  ptr += "<tr>"
+         "<td colspan=\"2\" class=\"settings-cell\">";
+
+  if(relay1state == true) {
+    ptr += "<a class=\"button button-on\" href=\"/toggle?id=1\">Turn OFF</a>";
+  } else {
+    ptr += "<a class=\"button button-off\" href=\"/toggle?id=1\">Turn ON</a>";
+  }
+  ptr += "</td></tr>";
+
+  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0) {
+    ptr += "<tr>"
+        "<th>Timer off after:</th>"
+        "<td>";
+    ptr += millisToString(relay1timeoutWhen - millis());
+    ptr += "</td></tr>";
+  }
+
+    ptr += "<tr>"
         "<th>Flow rate:</th>"
         "<td>";
   ptr += int(flowRate1); // Print the integer part of the variable
@@ -390,25 +517,39 @@ String SendHTML(){
         "<td>";
   ptr += totalMilliLitres1;
   ptr += " mL</td>"
-        "</tr>"
-        "<tr>"
-        "<td colspan=\"2\" class=\"settings-cell\">";
-
-  if(relay1state == true) {
-    ptr += "<a class=\"button button-on\" href=\"/toggle?id=1\">Turn OFF</a>";
-  } else {
-    ptr += "<a class=\"button button-off\" href=\"/toggle?id=1\">Turn ON</a>";
-  }
-  ptr += "</td></tr>";
+         "</tr>";
   ptr += "</table>";
   ptr += "</div>";
 
   ptr += "<div>";
   ptr += "<h2>" + config.relay_2_name + "</h2>";
-  ptr += "<table>"
-        "<tr>"
-        "<th>Flow rate:</th>"
+
+  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0) {
+    ptr += "<h3 id=\"relay_2_timer\"></h3>";
+  }
+
+  ptr += "<table>";
+  ptr += "<tr>"
+         "<td colspan=\"2\" class=\"settings-cell\">";
+  
+  if(relay2state == true) {
+    ptr += "<a class=\"button button-on\" href=\"/toggle?id=2\">Turn OFF</a>";
+  } else {
+    ptr += "<a class=\"button button-off\" href=\"/toggle?id=2\">Turn ON</a>";
+  }
+  ptr += "</td></tr>";
+
+  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0) {
+    ptr += "<tr>"
+        "<th>Turn off after:</th>"
         "<td>";
+    ptr += millisToString(relay2timeoutWhen - millis());
+    ptr += "</td></tr>";
+  }
+
+  ptr += "<tr>"
+         "<th>Flow rate:</th>"
+         "<td>";
   ptr += int(flowRate2); // Print the integer part of the variable
   ptr += "."; // Print the decimal point
   // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
@@ -427,17 +568,7 @@ String SendHTML(){
         "<td>";
   ptr += totalMilliLitres2;
   ptr += " mL</td>"
-        "</tr>"
-        "<tr>"
-        "<td colspan=\"2\" class=\"settings-cell\">";
-        
-
-  if(relay2state == true) {
-    ptr += "<a class=\"button button-on\" href=\"/toggle?id=2\">Turn OFF</a>";
-  } else {
-    ptr += "<a class=\"button button-off\" href=\"/toggle?id=2\">Turn ON</a>";
-  }
-  ptr += "</td></tr>";
+         "</tr>";
   ptr += "</table>";
 
   ptr += "</div>";
@@ -455,14 +586,24 @@ void handle_pageConfig() {
 
 void handle_saveConfig() {
   // Save runtime data
-  String arg = server.arg("mqtt_port");
+  String arg;
+  arg = server.arg("mqtt_port");
   arg.trim();
+  
   config.mqtt_port = (arg.length() == 0 ? 1883 : arg.toInt());
   config.mqtt_server = server.arg("mqtt_server");
   config.mqtt_user = server.arg("mqtt_user"); 
   config.mqtt_password = server.arg("mqtt_password");
   config.relay_1_name = server.arg("relay_1_name");
   config.relay_2_name = server.arg("relay_2_name");
+  
+  arg = server.arg("relay_1_timeout");
+  arg.trim();
+  config.relay_1_timeout = (arg.length() == 0 ? 0 : arg.toInt());
+  
+  arg = server.arg("relay_2_timeout");
+  arg.trim();
+  config.relay_2_timeout = (arg.length() == 0 ? 0 : arg.toInt());
   
   String channel = server.arg("mqtt_channel");
   channel.trim();
@@ -486,7 +627,9 @@ void handle_saveConfig() {
   jsonDocument["mqtt_password"] = config.mqtt_password;
   jsonDocument["mqtt_channel"] = config.mqtt_channel;
   jsonDocument["relay_1_name"] = config.relay_1_name;
+  jsonDocument["relay_1_timeout"] = config.relay_1_timeout;
   jsonDocument["relay_2_name"] = config.relay_2_name;
+  jsonDocument["relay_2_timeout"] = config.relay_2_timeout;
 
   // Serialize JSON to file
   if (serializeJson(jsonDocument, configFile) == 0) {
@@ -567,11 +710,12 @@ void setup() {
   attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
   attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
 
-  // !!! using internal LED blocks internal TTY output !!! On-board LED je připojena mezi TX1 = GPIO2 a VCC 
-   //set led pin as output
-  //pinMode(LED_BUILTIN, OUTPUT);
-  // start ticker with 0.5 because we start in AP mode and try to connect
-  //ticker.attach(0.6, tick);
+  // !!! using internal LED (LED_BUILTIN) blocks internal TTY output !!! On-board LED je připojena mezi TX1 = GPIO2 a VCC 
+
+  // Set led pin as output
+  pinMode(PinLedStatus, OUTPUT);
+  // Start ticker with 0.5 because we start in AP mode and try to connect
+  ticker.attach(0.6, tickStatusLed);
 
   // WiFiManager
   WiFiManager wifiManager;
@@ -589,11 +733,10 @@ void setup() {
   // Set callback that gets called when connecting to previous WiFi fails, and enters Access Point mode
   wifiManager.setAPCallback(configModeCallback);
 
-  //if you get here you have connected to the WiFi
-  
-  //ticker.detach();
-  //keep LED on
-  //digitalWrite(LED_BUILTIN, LOW);
+  // If we get here we have connected to the WiFi
+  ticker.detach();
+  // Keep status LED on
+  digitalWrite(PinLedStatus, HIGH);
 
   // init values from file system
   if (SPIFFS.begin()) {
@@ -625,6 +768,8 @@ void setup() {
         if(config.relay_2_name.length() == 0) {
           config.relay_2_name = "Relay 2";
         }
+        config.relay_1_timeout = json["relay_1_timeout"] | 0;
+        config.relay_2_timeout = json["relay_2_timeout"] | 0;
 
         configFile.close();
     }
@@ -639,6 +784,7 @@ void setup() {
   server.on("/config", HTTP_POST, handle_saveConfig);
   server.on("/toggle", handle_toggle);
   server.on("/style.css", handle_stylesheetFile);
+  server.on("/scripts.js", handle_jsFile);
   server.onNotFound(handle_NotFound);  
   server.begin();
   Serial.println("HTTP server started");
@@ -659,6 +805,17 @@ void loop() {
   // Continuously read the status of the button. 
 	button1.read();
   button2.read();
+
+  // Process relay timeouts
+  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0 && relay1timeoutWhen < millis()) {
+    Serial.println("Configured timeout for relay 1 exceeded -> toggling");
+    toggleRelay(1);
+  }
+
+  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0 && relay2timeoutWhen < millis()) {
+    Serial.println("Configured timeout for relay 2 exceeded -> toggling");
+    toggleRelay(2);
+  }
 
   // Process water flow sensors
   if((millis() - oldTime) > 1000) // Only process counters once per second
@@ -762,6 +919,5 @@ void loop() {
     // Enable the interrupt again now that we've finished sending output
     attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
     attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
-  }
-  
+  } 
 }
