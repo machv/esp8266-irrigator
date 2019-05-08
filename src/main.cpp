@@ -5,22 +5,13 @@
 #include <PubSubClient.h>         //MQTT server library
 #include <EasyButton.h>
 #include <ArduinoJson.h>
+#include "settings.h"             // Application settings
+#include "FlowMeter.h"            // Flow meter
 
 //for LED status
 #include <Ticker.h>
 Ticker ticker;
 
-struct Config {
-  String mqtt_server;
-  int mqtt_port;
-  String mqtt_user;
-  String mqtt_password;
-  String mqtt_channel;
-  String relay_1_name;
-  int relay_1_timeout;
-  String relay_2_name;
-  int relay_2_timeout;
-};
 const char *ConfigFileName = "/config.json";
 Config config; 
 
@@ -34,9 +25,13 @@ WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 unsigned long lastMqttConnectionRetryTime;
 unsigned long mqttReconnectDelay = 30000;
+String mqttLwtTopic;
 String mqttTopicRelay1;
 String mqttTopicRelay2;
 
+#define RELAY_COUNT 2
+
+// PIN Definitions
 #define PinMeter1 D5
 #define PinMeter2 D6
 #define PinRelay1 D2
@@ -52,39 +47,18 @@ bool relay2state = false;
 
 EasyButton button1(PinButton1);
 EasyButton button2(PinButton2);
+//FlowMeter meter1(PinMeter1);
+//FlowMeter meter2(PinMeter2);
+
+const uint8_t METER_PINS[RELAY_COUNT] = { PinMeter1, PinMeter2 };
+FlowMeter meters[RELAY_COUNT];
 
 // The hall-effect flow sensor outputs approximately 4.5 pulses per second per
 // litre/minute of flow.
 float calibrationFactor = 4.5;
 
-// To store the "rise ups" from the flow meter pulses
-volatile uint pulseCounterMeter1 = 0;
-volatile uint pulseCounterMeter2 = 0;
-
-float flowRate1;
-float flowRate2;
-
-unsigned int flowMilliLitres1;
-unsigned int flowMilliLitres2;
-
-unsigned long totalMilliLitres1;
-unsigned long totalMilliLitres2;
-
-unsigned long oldTime;
-
 //Interrupt function, so that the counting of pulse “rise ups” dont interfere with the rest of the code  (attachInterrupt)
-void meter1_triggered() {
-  pulseCounterMeter1++;
 
-  Serial.printf("Trigger 1, current count = %d", pulseCounterMeter1);
-  Serial.println();
-}
-void meter2_triggered() {
-  pulseCounterMeter2++;
-
-  Serial.printf("Trigger 2, current count = %d", pulseCounterMeter2);
-  Serial.println();
-}
 
 void tickStatusLed() {
   //toggle state
@@ -197,7 +171,7 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
   }
 }
 
-void setupMqtt(int retries) {  
+void setupMqtt(int retries) { 
   if(mqttClient.connected()) {
     Serial.println("[MQTT] Disconnecting...");
     mqttClient.disconnect();
@@ -207,31 +181,45 @@ void setupMqtt(int retries) {
     return; // no server, no connection needed
   }
   
+  mqttLwtTopic = String(config.mqtt_channel + "status");
   mqttTopicRelay1 = String(config.mqtt_channel + "1/state");
   mqttTopicRelay2 = String(config.mqtt_channel + "2/state");
 
   mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
   mqttClient.setCallback(mqttSubscriptionCallback);
 
+  const char *mqtt_user = nullptr;
+  const char *mqtt_password = nullptr;
+  if (config.mqtt_user.length() > 0) 
+    mqtt_user = config.mqtt_user.c_str();
+  if (config.mqtt_user.length() > 0) 
+    mqtt_password = config.mqtt_password.c_str();
+
+  // Build Client ID from MAC Address
+  uint32_t chipId = ESP.getChipId();
+  char clientId[20];
+  snprintf(clientId, 20, "Zavlazovac-%08X", chipId);
+
   int retryCount = 0;
   while (!mqttClient.connected() && retryCount < retries) {
-      Serial.print("[MQTT] Connecting (retry #");
-      Serial.print(retryCount + 1);
-      Serial.println(")...");
+      Serial.printf("[MQTT] Connecting (retry %d of %d)...", (retryCount + 1), retries);
+      Serial.println();
   
       bool connectionState = false;
-      if(config.mqtt_user.length() > 0) {
-        connectionState = mqttClient.connect("Zavlazovac", config.mqtt_user.c_str(), config.mqtt_password.c_str());
-      } else {
-        connectionState = mqttClient.connect("Zavlazovac");
-      }
+      connectionState = mqttClient.connect(clientId, mqtt_user, mqtt_password, mqttLwtTopic.c_str(), 1, true, "Offline");
       
       if (connectionState) {
         Serial.println("[MQTT] Connected successfully.");  
+
+        // publish online status to LWT
+        mqttClient.publish(mqttLwtTopic.c_str(), "Online");
       } else {
         Serial.print("[MQTT] Connection failed with code: ");
         Serial.println(mqttClient.state());
-        delay(2000);
+
+        if(retryCount > 0) { // delay only if more retries are requested
+          delay(1000);
+        }
       }
 
       retryCount++;
@@ -499,23 +487,23 @@ String SendHTML(){
     ptr += "<tr>"
         "<th>Flow rate:</th>"
         "<td>";
-  ptr += int(flowRate1); // Print the integer part of the variable
+  ptr += int(meters[0].flowRate); // Print the integer part of the variable
   ptr += "."; // Print the decimal point
   // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-  frac = (flowRate1 - int(flowRate1)) * 10;
+  frac = (meters[0].flowRate - int(meters[0].flowRate)) * 10;
   ptr += frac; // Print the fractional part of the variable
   ptr += " L/min</td>"
         "</tr>"
         "<tr>"
         "<th>Current Liquid Flowing:</th>"
         "<td>";
-  ptr += flowMilliLitres1;
+  ptr += meters[0].flowMilliLitres;
   ptr += " mL/Sec</td>"
         "</tr>"
         "<tr>"
         "<th>Output Liquid Quantity:</th>"
         "<td>";
-  ptr += totalMilliLitres1;
+  ptr += meters[0].totalMilliLitres;
   ptr += " mL</td>"
          "</tr>";
   ptr += "</table>";
@@ -550,24 +538,24 @@ String SendHTML(){
   ptr += "<tr>"
          "<th>Flow rate:</th>"
          "<td>";
-  ptr += int(flowRate2); // Print the integer part of the variable
+  ptr += int(meters[1].flowRate); // Print the integer part of the variable
   ptr += "."; // Print the decimal point
   // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-  frac = (flowRate2 - int(flowRate2)) * 10;
+  frac = (meters[1].flowRate - int(meters[1].flowRate)) * 10;
   ptr += frac; // Print the fractional part of the variable
   ptr += " L/min</td>"
         "</tr>"
         "<tr>"
         "<th>Current Liquid Flowing:</th>"
         "<td>";
-  ptr += flowMilliLitres2;
-  ptr += " mL/Sec</td>"
+  ptr += meters[1].flowMilliLitres / 1000;
+  ptr += " L/Sec</td>"
         "</tr>"
         "<tr>"
         "<th>Output Liquid Quantity:</th>"
         "<td>";
-  ptr += totalMilliLitres2;
-  ptr += " mL</td>"
+  ptr += meters[1].totalMilliLitres / 1000;
+  ptr += " L</td>"
          "</tr>";
   ptr += "</table>";
 
@@ -681,6 +669,47 @@ void onPressed2() {
   toggleRelay(2);
 }
 
+void meter0_triggered() {
+  meters[0].pulseCounter++;
+
+  Serial.printf("[FLOW] Flow meter 1 triggered, current counter = %d", meters[0].pulseCounter);
+  Serial.println();
+}
+void meter1_triggered() {
+  meters[1].pulseCounter++;
+
+  Serial.printf("[FLOW] Flow meter 2 triggered, current counter = %d", meters[1].pulseCounter);
+  Serial.println();
+}
+
+void meter_flowChanged(uint8_t pin) {
+  int meterIndex = 0;
+  bool meterFound = false;
+  for(meterIndex = 0; meterIndex < RELAY_COUNT; meterIndex++) {
+    if(METER_PINS[meterIndex] == pin) {
+      meterFound = true;
+      break;
+    }
+  }
+
+  if(!meterFound) {
+    Serial.printf("[FLOW] Unable to find meter index for PIN %d", pin);
+    Serial.println();
+
+    return;
+  }
+
+  if(mqttClient.connected()) {
+    String channelCurrent = String(config.mqtt_channel + meterIndex + "/currentFlow");
+    String valueCurrent = String(meters[meterIndex].flowRate);
+    mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
+
+    String channelTotal = String(config.mqtt_channel + meterIndex + "/totalFlow");
+    String valueTotal = String(meters[meterIndex].totalMilliLitres);
+    mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
+  }
+}
+
 void setup() {
   // For testing
   //SPIFFS.format();
@@ -703,12 +732,13 @@ void setup() {
   digitalWrite(PinRelay1, HIGH); // by default turn it off (=HIGH)
   pinMode(PinRelay2, OUTPUT);
   digitalWrite(PinRelay2, HIGH); // by default turn it off (=HIGH)
-  pinMode(PinMeter1, INPUT);
-  pinMode(PinMeter2, INPUT);
-  
-  // And attach interrupt watches to meter PINs
-  attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
-  attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
+
+  // Prepare meters...
+  meters[0].begin(METER_PINS[0], meter0_triggered);
+  meters[1].begin(METER_PINS[1], meter1_triggered);
+  for(int i = 0; i < RELAY_COUNT; i++) {
+    meters[i].onFlowChanged(meter_flowChanged);
+  }
 
   // !!! using internal LED (LED_BUILTIN) blocks internal TTY output !!! On-board LED je připojena mezi TX1 = GPIO2 a VCC 
 
@@ -794,7 +824,7 @@ void loop() {
   // Process web server requests
   server.handleClient();
   
-  // MQTT reconnect if no connection with delay
+  // MQTT reconnect if no connection with non-blocking delay
   if(!mqttClient.connected() && ((millis() - lastMqttConnectionRetryTime) > mqttReconnectDelay)) {
     setupMqtt(1);
   }
@@ -817,107 +847,7 @@ void loop() {
     toggleRelay(2);
   }
 
-  // Process water flow sensors
-  if((millis() - oldTime) > 1000) // Only process counters once per second
-  {
-    // Disable the interrupt while calculating flow rate and sending the value to the host
-    detachInterrupt(PinMeter1);
-    detachInterrupt(PinMeter2);
-
-    // Because this loop may not complete in exactly 1 second intervals we calculate
-    // the number of milliseconds that have passed since the last execution and use
-    // that to scale the output. We also apply the calibrationFactor to scale the output
-    // based on the number of pulses per second per units of measure (litres/minute in
-    // this case) coming from the sensor.
-    flowRate1 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter1) / calibrationFactor;
-    flowRate2 = ((1000.0 / (millis() - oldTime)) * pulseCounterMeter2) / calibrationFactor;
-
-    // Note the time this processing pass was executed. Note that because we've
-    // disabled interrupts the millis() function won't actually be incrementing right
-    // at this point, but it will still return the value it was set to just before
-    // interrupts went away.
-    oldTime = millis();
-
-    // Divide the flow rate in litres/minute by 60 to determine how many litres have
-    // passed through the sensor in this 1 second interval, then multiply by 1000 to
-    // convert to millilitres.
-    flowMilliLitres1 = (flowRate1 / 60) * 1000;
-    flowMilliLitres2 = (flowRate2 / 60) * 1000;
-
-    // Add the millilitres passed in this second to the cumulative total
-    totalMilliLitres1 += flowMilliLitres1;
-    totalMilliLitres2 += flowMilliLitres2;
-
-    unsigned int frac;
-
-    if(flowRate1 > 0) {
-      // Print the flow rate for this second in litres / minute
-      Serial.print("[Valve 1] Flow rate: ");
-      Serial.print(int(flowRate1)); // Print the integer part of the variable
-      Serial.print("."); // Print the decimal point
-      // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-      frac = (flowRate1 - int(flowRate1)) * 10;
-      Serial.print(frac, DEC); // Print the fractional part of the variable
-      Serial.print("L/min");
-      // Print the number of litres flowed in this second
-      Serial.print("  Current Liquid Flowing: "); // Output separator
-      Serial.print(flowMilliLitres1);
-      Serial.print("mL/Sec");
-
-      // Print the cumulative total of litres flowed since starting
-      Serial.print("  Output Liquid Quantity: "); // Output separator
-      Serial.print(totalMilliLitres1);
-      Serial.println("mL");
-    }
-
-    if(flowRate2) {
-      // Print the flow rate for this second in litres / minute
-      Serial.print("[Valve 2] Flow rate: ");
-      Serial.print(int(flowRate2)); // Print the integer part of the variable
-      Serial.print("."); // Print the decimal point
-      // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-      frac = (flowRate2 - int(flowRate2)) * 10;
-      Serial.print(frac, DEC); // Print the fractional part of the variable
-      Serial.print("L/min");
-      // Print the number of litres flowed in this second
-      Serial.print("  Current Liquid Flowing: "); // Output separator
-      Serial.print(flowMilliLitres2);
-      Serial.print("mL/Sec");
-
-      // Print the cumulative total of litres flowed since starting
-      Serial.print("  Output Liquid Quantity: "); // Output separator
-      Serial.print(totalMilliLitres2);
-      Serial.println("mL");
-    }
-
-    if(mqttClient.connected()) {
-      if(flowRate1 > 0) {
-        String channelCurrent = String(config.mqtt_channel + "1/currentFlow");
-        String valueCurrent = String(flowRate1);
-        mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
-
-        String channelTotal = String(config.mqtt_channel + "1/totalFlow");
-        String valueTotal = String(totalMilliLitres1);
-        mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
-      }
-
-      if(flowRate2 > 0) {
-        String channelCurrent = String(config.mqtt_channel + "2/currentFlow");
-        String valueCurrent = String(flowRate2);
-        mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
-
-        String channelTotal = String(config.mqtt_channel + "2/totalFlow");
-        String valueTotal = String(totalMilliLitres2);
-        mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
-      }
-    }
-
-    // Reset the pulse counter so we can start incrementing again
-    pulseCounterMeter1 = 0;
-    pulseCounterMeter2 = 0;
-
-    // Enable the interrupt again now that we've finished sending output
-    attachInterrupt(digitalPinToInterrupt(PinMeter1), meter1_triggered, FALLING);
-    attachInterrupt(digitalPinToInterrupt(PinMeter2), meter2_triggered, FALLING);
-  } 
+  for(int i = 0; i < RELAY_COUNT; i++) {
+    meters[i].loop();
+  }
 }
