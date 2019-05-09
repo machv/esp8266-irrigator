@@ -2,7 +2,7 @@
 
 void FlowMeter::begin(uint8_t pin, isrFunctionPointer action) {
     _pin = pin;
-    
+
     begin(action);
 }
 
@@ -58,7 +58,7 @@ void FlowMeter::loop() {
       Serial.printf("  Current Liquid Flowing: %d mL/sec", flowMilliLitres); // Output separator
 
       // Print the cumulative total of litres flowed since starting
-      Serial.printf("  Output Liquid Quantity: %d mL", totalMilliLitres); // Output separator
+      Serial.printf("  Output Liquid Quantity: %lu mL", totalMilliLitres); // Output separator
       Serial.println();
     }
 
