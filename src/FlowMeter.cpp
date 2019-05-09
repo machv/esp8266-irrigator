@@ -23,7 +23,6 @@ void FlowMeter::onFlowChanged(FlowMeter::callback_t callback) {
 }
 
 void FlowMeter::loop() {
-// Process water flow sensors
   if((millis() - _oldTime) > 1000) // Only process counters once per second
   {
     // Disable the interrupt while calculating flow rate and sending the value to the host

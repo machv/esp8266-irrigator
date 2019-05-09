@@ -1,15 +1,34 @@
-#include <FS.h> //this needs to be first
+#include <FS.h> // FS needs to be the first
 #include <Arduino.h>
-#include <WiFiManager.h> 
+#include <WiFiManager.h>
 #include <ESP8266WebServer.h>
-#include <PubSubClient.h>         //MQTT server library
+#include <PubSubClient.h> // MQTT server library
 #include <EasyButton.h>
 #include <ArduinoJson.h>
-#include "settings.h"             // Application settings
-#include "FlowMeter.h"            // Flow meter
+#include <Ticker.h> // for LED status indications
+#include "settings.h" // Application settings
+#include "FlowMeter.h" // Flow meter
 
-//for LED status
-#include <Ticker.h>
+#define RELAY_COUNT 2
+
+// HW mapping
+#define PinMeter1 D5
+#define PinMeter2 D6
+#define PinRelay1 D2
+#define PinRelay2 D3
+#define PinButton1 D7
+#define PinButton2 D4
+#define PinLed1 D0
+#define PinLed2 D1
+#define PinLedStatus D8
+
+// Pin arrays
+const uint8_t BUTTON_PINS[RELAY_COUNT] = { PinButton1, PinButton2 };
+const uint8_t LED_PINS[RELAY_COUNT] = { PinLed1, PinLed2 };
+const uint8_t RELAY_PINS[RELAY_COUNT] = { PinRelay1, PinRelay2 };
+const uint8_t METER_PINS[RELAY_COUNT] = { PinMeter1, PinMeter2 };
+
+// schedules LED blinking
 Ticker ticker;
 
 const char *ConfigFileName = "/config.json";
@@ -26,39 +45,23 @@ PubSubClient mqttClient(espClient);
 unsigned long lastMqttConnectionRetryTime;
 unsigned long mqttReconnectDelay = 30000;
 String mqttLwtTopic;
-String mqttTopicRelay1;
-String mqttTopicRelay2;
+String mqttTopicRelayStatus[RELAY_COUNT];
+String mqttTopicRelayCommand[RELAY_COUNT];
+bool relayState[RELAY_COUNT];
 
-#define RELAY_COUNT 2
+EasyButton buttons[RELAY_COUNT] = { 
+  EasyButton(PinButton1), 
+  EasyButton(PinButton2) 
+};
 
-// PIN Definitions
-#define PinMeter1 D5
-#define PinMeter2 D6
-#define PinRelay1 D2
-#define PinRelay2 D3
-#define PinButton1 D7
-#define PinButton2 D4
-#define PinLed1 D0
-#define PinLed2 D1
-#define PinLedStatus D8
-
-bool relay1state = false;
-bool relay2state = false;
-
-EasyButton button1(PinButton1);
-EasyButton button2(PinButton2);
-//FlowMeter meter1(PinMeter1);
-//FlowMeter meter2(PinMeter2);
-
-const uint8_t METER_PINS[RELAY_COUNT] = { PinMeter1, PinMeter2 };
-FlowMeter meters[RELAY_COUNT];
+FlowMeter meters[RELAY_COUNT] = {
+  FlowMeter(PinMeter1),
+  FlowMeter(PinMeter2)
+};
 
 // The hall-effect flow sensor outputs approximately 4.5 pulses per second per
 // litre/minute of flow.
 float calibrationFactor = 4.5;
-
-//Interrupt function, so that the counting of pulse “rise ups” dont interfere with the rest of the code  (attachInterrupt)
-
 
 void tickStatusLed() {
   //toggle state
@@ -69,49 +72,31 @@ void tickStatusLed() {
 }
 
 void toggleRelay(int id) {
-  uint8_t relayPin = 0;
-  uint8_t ledPin = 0;
-  String channel;
-  
-  switch(id) {
-    case 1:
-      relayPin = PinRelay1;
-      ledPin = PinLed1;
-      channel = mqttTopicRelay1;
-      break;
-    case 2:
-      relayPin = PinRelay2;
-      ledPin = PinLed2;
-      channel = mqttTopicRelay2;
-      break;
-    default:
-      return;
-      break;
-  }
+  uint8_t relayPin = RELAY_PINS[id];
+  uint8_t ledPin = LED_PINS[id];
+  String channel = mqttTopicRelayStatus[id];
 
   int currentValue = digitalRead(relayPin);
   int newValue = !currentValue;
 
-  Serial.printf("Toggling relay #%d from %i to %i", id, currentValue, newValue);
+  Serial.printf("Toggling relay #%i from %i to %i", id, currentValue, newValue);
 
   // Do the toggle
   // HIGH (0x1) = OFF, LOW (0x0) = ON
   digitalWrite(relayPin, newValue); // relay
   digitalWrite(ledPin, !newValue); // led
   
-  if(id == 1) {
-    relay1state = !newValue;
+  relayState[id] = !newValue;
 
-    if(relay1state && config.relay_1_timeout > 0) { // if enabling and is timeout set, activate
+  if(id == 1) {
+    if(relayState[0] && config.relay_1_timeout > 0) { // if enabling and is timeout set, activate
       relay1timeoutWhen = millis() + (config.relay_1_timeout * 60 * 1000); // timeout in settings is in minutes
     } else {
       relay1timeoutWhen = 0;
     }
 
   } else if (id == 2) {
-    relay2state = !newValue;
-
-    if(relay2state && config.relay_2_timeout > 0) { // if enabling and is timeout set, activate
+    if(relayState[1] && config.relay_2_timeout > 0) { // if enabling and is timeout set, activate
       relay2timeoutWhen = millis() + (config.relay_2_timeout * 60 * 1000); // timeout in settings is in minutes
     } else {
       relay2timeoutWhen = 0;
@@ -120,11 +105,11 @@ void toggleRelay(int id) {
 
   Serial.println();
 
-  // And publish MQTT update
+  // And publish state update via MQTT
   if(mqttClient.connected()) {
     Serial.println("[MQTT] Publishing updated state after toggle.");
 
-    String value = String(!newValue); // actual state is negation of the PIN state
+    String value = String(relayState[id]);
     mqttClient.publish(channel.c_str(), value.c_str());
   }
 }
@@ -140,27 +125,27 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
   Serial.println();
 
   // check if we received topics for state change 
-  if (strcmp (mqttTopicRelay1.c_str(), topic) == 0) {
+  if (strcmp (mqttTopicRelayCommand[0].c_str(), topic) == 0) {
     Serial.printf("Relay 1 state change requested to %c", payload[0]);
     if(
-        (payload[0] == '1' && relay1state == false) ||
-        (payload[0] == '0' && relay1state == true)
+        (payload[0] == '1' && relayState[0] == false) ||
+        (payload[0] == '0' && relayState[0] == true)
       ) {
         Serial.print(", current state ");
-        Serial.print(relay1state);
+        Serial.print(relayState[0]);
         Serial.println(" differs -> toggle");
         toggleRelay(1);
     } else {
       Serial.println();
     }
-  } else if (strcmp (mqttTopicRelay2.c_str(), topic) == 0) {
+  } else if (strcmp (mqttTopicRelayCommand[1].c_str(), topic) == 0) {
     Serial.print("Relay 2 state change requested");
     if(
-        (payload[0] == '1' && relay2state == false) ||
-        (payload[0] == '0' && relay2state == true)
+        (payload[0] == '1' && relayState[1] == false) ||
+        (payload[0] == '0' && relayState[1] == true)
       ) {
            Serial.print(", current state ");
-        Serial.print(relay2state);
+        Serial.print(relayState[1]);
         Serial.println(" differs -> toggle");
           toggleRelay(2);
     } else {
@@ -182,8 +167,11 @@ void setupMqtt(int retries) {
   }
   
   mqttLwtTopic = String(config.mqtt_channel + "status");
-  mqttTopicRelay1 = String(config.mqtt_channel + "1/state");
-  mqttTopicRelay2 = String(config.mqtt_channel + "2/state");
+  for(int i = 0; i < RELAY_COUNT; i++) {
+    // in MQTT relays are numbered starting with 1, not 0
+    mqttTopicRelayStatus[i] = String(config.mqtt_channel + "state/" + (i + 1));
+    mqttTopicRelayCommand[i] = String(config.mqtt_channel + "command/" + (i + 1));
+  }
 
   mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
   mqttClient.setCallback(mqttSubscriptionCallback);
@@ -227,20 +215,14 @@ void setupMqtt(int retries) {
 
   // And subscribe to respective channels
   if(mqttClient.connected()) {
-    Serial.println("[MQTT] Publishing current states of relays.");
-    String value1 = String(relay1state);
-    mqttClient.publish(mqttTopicRelay1.c_str(), value1.c_str());
-    String value2 = String(relay2state);
-    mqttClient.publish(mqttTopicRelay2.c_str(), value2.c_str());
+    for(int i = 0; i < RELAY_COUNT; i++) {
+      Serial.printf("[MQTT] Publishing current state of relay %d.\n", i);
+      String value = String(relayState[i]);
+      mqttClient.publish(mqttTopicRelayStatus[i].c_str(), value.c_str());
 
-    Serial.println("[MQTT] Subscribing to the channels:");
-    Serial.print("  - ");
-    Serial.println(mqttTopicRelay1);
-    mqttClient.subscribe(mqttTopicRelay1.c_str());
-    
-    Serial.print("  - ");
-    Serial.println(mqttTopicRelay2);
-    mqttClient.subscribe(mqttTopicRelay2.c_str());
+      Serial.printf("[MQTT] Subscribing to the command channel: %s\n", mqttTopicRelayCommand[i].c_str());
+      mqttClient.subscribe(mqttTopicRelayCommand[i].c_str());
+    }
   }
 
   lastMqttConnectionRetryTime = millis();
@@ -469,7 +451,7 @@ String SendHTML(){
   ptr += "<tr>"
          "<td colspan=\"2\" class=\"settings-cell\">";
 
-  if(relay1state == true) {
+  if(relayState[0] == true) {
     ptr += "<a class=\"button button-on\" href=\"/toggle?id=1\">Turn OFF</a>";
   } else {
     ptr += "<a class=\"button button-off\" href=\"/toggle?id=1\">Turn ON</a>";
@@ -520,7 +502,7 @@ String SendHTML(){
   ptr += "<tr>"
          "<td colspan=\"2\" class=\"settings-cell\">";
   
-  if(relay2state == true) {
+  if(relayState[1] == true) {
     ptr += "<a class=\"button button-on\" href=\"/toggle?id=2\">Turn OFF</a>";
   } else {
     ptr += "<a class=\"button button-off\" href=\"/toggle?id=2\">Turn ON</a>";
@@ -715,15 +697,15 @@ void setup() {
   //SPIFFS.format();
   //WiFiManager.reset();
 
-  // Set serial console Baud ate
+  // Set serial console Baud rate
   Serial.begin(115200);
 
-  // Initialize the button.
-	button1.begin();
-  button1.onPressed(onPressed1);
+  // Initialize the buttons
+	buttons[0].begin();
+  buttons[0].onPressed(onPressed1);
   
-  button2.begin();
-  button2.onPressed(onPressed2);
+  buttons[1].begin();
+  buttons[1].onPressed(onPressed2);
 	
   // Initialize GPIO PINs
   pinMode(PinLed1, OUTPUT);
@@ -734,8 +716,8 @@ void setup() {
   digitalWrite(PinRelay2, HIGH); // by default turn it off (=HIGH)
 
   // Prepare meters...
-  meters[0].begin(METER_PINS[0], meter0_triggered);
-  meters[1].begin(METER_PINS[1], meter1_triggered);
+  meters[0].begin(meter0_triggered);
+  meters[1].begin(meter1_triggered);
   for(int i = 0; i < RELAY_COUNT; i++) {
     meters[i].onFlowChanged(meter_flowChanged);
   }
@@ -832,9 +814,13 @@ void loop() {
   // Process MQTT communication
   mqttClient.loop();
   
-  // Continuously read the status of the button. 
-	button1.read();
-  button2.read();
+  for(int i = 0; i < RELAY_COUNT; i++) {
+    // Continuously read the status of the button. 
+    buttons[i].read();
+
+    // process flow meters
+    meters[i].loop();
+  }
 
   // Process relay timeouts
   if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0 && relay1timeoutWhen < millis()) {
@@ -845,9 +831,5 @@ void loop() {
   if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0 && relay2timeoutWhen < millis()) {
     Serial.println("Configured timeout for relay 2 exceeded -> toggling");
     toggleRelay(2);
-  }
-
-  for(int i = 0; i < RELAY_COUNT; i++) {
-    meters[i].loop();
   }
 }
