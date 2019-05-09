@@ -9,8 +9,6 @@
 #include "settings.h" // Application settings
 #include "FlowMeter.h" // Flow meter
 
-#define RELAY_COUNT 2
-
 // HW mapping
 #define PinMeter1 D5
 #define PinMeter2 D6
@@ -23,19 +21,20 @@
 #define PinLedStatus D8
 
 // Pin arrays
-const uint8_t BUTTON_PINS[RELAY_COUNT] = { PinButton1, PinButton2 };
-const uint8_t LED_PINS[RELAY_COUNT] = { PinLed1, PinLed2 };
-const uint8_t RELAY_PINS[RELAY_COUNT] = { PinRelay1, PinRelay2 };
-const uint8_t METER_PINS[RELAY_COUNT] = { PinMeter1, PinMeter2 };
+const uint8_t BUTTON_PINS[RELAYS_COUNT] = { PinButton1, PinButton2 };
+const uint8_t LED_PINS[RELAYS_COUNT] = { PinLed1, PinLed2 };
+const uint8_t RELAY_PINS[RELAYS_COUNT] = { PinRelay1, PinRelay2 };
+const uint8_t METER_PINS[RELAYS_COUNT] = { PinMeter1, PinMeter2 };
 
 // schedules LED blinking
 Ticker ticker;
 
 const char *ConfigFileName = "/config.json";
-Config config; 
+Configuration Config; 
 
-unsigned long relay1timeoutWhen;
-unsigned long relay2timeoutWhen;
+unsigned long relayTimeoutWhen[RELAYS_COUNT];
+//unsigned long relay1timeoutWhen;
+//unsigned long relay2timeoutWhen;
 
 ESP8266WebServer server(80);
 
@@ -45,16 +44,16 @@ PubSubClient mqttClient(espClient);
 unsigned long lastMqttConnectionRetryTime;
 unsigned long mqttReconnectDelay = 30000;
 String mqttLwtTopic;
-String mqttTopicRelayStatus[RELAY_COUNT];
-String mqttTopicRelayCommand[RELAY_COUNT];
-bool relayState[RELAY_COUNT];
+String mqttTopicRelayStatus[RELAYS_COUNT];
+String mqttTopicRelayCommand[RELAYS_COUNT];
+bool relayState[RELAYS_COUNT];
 
-EasyButton buttons[RELAY_COUNT] = { 
+EasyButton buttons[RELAYS_COUNT] = { 
   EasyButton(PinButton1), 
   EasyButton(PinButton2) 
 };
 
-FlowMeter meters[RELAY_COUNT] = {
+FlowMeter meters[RELAYS_COUNT] = {
   FlowMeter(PinMeter1),
   FlowMeter(PinMeter2)
 };
@@ -62,6 +61,94 @@ FlowMeter meters[RELAY_COUNT] = {
 // The hall-effect flow sensor outputs approximately 4.5 pulses per second per
 // litre/minute of flow.
 float calibrationFactor = 4.5;
+
+void readConfigurationFile() {
+  // set defaults
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    Config.relays[i].name = String("Relay " + i);
+    Config.relays[i].timeout = 0;
+  }
+
+  // read config file
+  if(SPIFFS.exists(ConfigFileName))
+  {
+    Serial.println("Reading existing configuration.");
+
+    File configFile = SPIFFS.open(ConfigFileName, "r");
+
+    StaticJsonDocument<512> json;
+    DeserializationError error = deserializeJson(json, configFile);
+    if (error)
+      Serial.println(F("Failed to read file, using default configuration"));
+
+    // Copy values from the JsonDocument to the Config
+    // https://arduinojson.org/v6/example/config/
+    Config.mqtt_port = json["mqtt_port"] | 1883;
+    Config.mqtt_server = json["mqtt_server"].as<String>();
+    Config.mqtt_user = json["mqtt_user"].as<String>();
+    Config.mqtt_password = json["mqtt_password"].as<String>();
+    Config.mqtt_channel = json["mqtt_channel"].as<String>();
+    
+    if(json.containsKey("relays")) {
+      JsonArray relays = json["relays"].as<JsonArray>();
+      if(!relays.isNull()) {
+        int i = 0;
+        for(JsonObject relay : relays) {
+          Config.relays[i].name = relay["name"].as<String>();
+          Config.relays[i].timeout = json["timeout"] | 0;
+          i++;
+        }
+      }
+    }
+
+//    Config.relay_1_name = json["relay_1_name"].as<String>();
+//    if(Config.relay_1_name.length() == 0) {
+//      Config.relay_1_name = "Relay 1";
+//    }
+//    Config.relay_2_name = json["relay_2_name"].as<String>();
+//    if(Config.relay_2_name.length() == 0) {
+//      Config.relay_2_name = "Relay 2";
+//    }
+//    Config.relay_1_timeout = json["relay_1_timeout"] | 0;
+//    Config.relay_2_timeout = json["relay_2_timeout"] | 0;
+
+    configFile.close();
+  }
+}
+
+void saveConfigurationFile() {
+  Serial.println("Saving configuration file.");
+
+  File configFile = SPIFFS.open(ConfigFileName, "w");
+
+  // Allocate a temporary JsonDocument
+  // Don't forget to change the capacity to match your requirements.
+  // Use arduinojson.org/assistant to compute the capacity.
+  StaticJsonDocument<640> jsonDocument;
+
+  // Set global values 
+  jsonDocument["mqtt_server"] = Config.mqtt_server;
+  jsonDocument["mqtt_port"] = Config.mqtt_port;
+  jsonDocument["mqtt_user"] = Config.mqtt_user;
+  jsonDocument["mqtt_password"] = Config.mqtt_password;
+  jsonDocument["mqtt_channel"] = Config.mqtt_channel;
+
+  // and per relay
+  JsonArray relays = jsonDocument.createNestedArray("relays");
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    JsonObject relay = relays.createNestedObject();
+    relay["name"] = Config.relays[i].name;
+    relay["timeout"] = Config.relays[i].timeout;
+  }
+
+  // Serialize JSON to file
+  if (serializeJson(jsonDocument, configFile) == 0) {
+    Serial.println(F("Failed to write settings file."));
+  }
+
+  // Close the file
+  configFile.close();
+}
 
 void tickStatusLed() {
   //toggle state
@@ -88,21 +175,27 @@ void toggleRelay(int id) {
   
   relayState[id] = !newValue;
 
+  if(relayState[id] && Config.relays[id].timeout > 0) { // if enabling and is timeout set, activate
+    relayTimeoutWhen[id] = millis() + (Config.relays[id].timeout * 60 * 1000);
+  } else {
+    relayTimeoutWhen[id] = 0;
+  }
+/*
   if(id == 1) {
-    if(relayState[0] && config.relay_1_timeout > 0) { // if enabling and is timeout set, activate
-      relay1timeoutWhen = millis() + (config.relay_1_timeout * 60 * 1000); // timeout in settings is in minutes
+    if(relayState[0] && Config.relay_1_timeout > 0) { // if enabling and is timeout set, activate
+      relay1timeoutWhen = millis() + (Config.relay_1_timeout * 60 * 1000); // timeout in settings is in minutes
     } else {
       relay1timeoutWhen = 0;
     }
 
   } else if (id == 2) {
-    if(relayState[1] && config.relay_2_timeout > 0) { // if enabling and is timeout set, activate
-      relay2timeoutWhen = millis() + (config.relay_2_timeout * 60 * 1000); // timeout in settings is in minutes
+    if(relayState[1] && Config.relay_2_timeout > 0) { // if enabling and is timeout set, activate
+      relay2timeoutWhen = millis() + (Config.relay_2_timeout * 60 * 1000); // timeout in settings is in minutes
     } else {
       relay2timeoutWhen = 0;
     }
   }
-
+*/
   Serial.println();
 
   // And publish state update via MQTT
@@ -134,7 +227,7 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
         Serial.print(", current state ");
         Serial.print(relayState[0]);
         Serial.println(" differs -> toggle");
-        toggleRelay(1);
+        toggleRelay(0);
     } else {
       Serial.println();
     }
@@ -147,7 +240,7 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
            Serial.print(", current state ");
         Serial.print(relayState[1]);
         Serial.println(" differs -> toggle");
-          toggleRelay(2);
+          toggleRelay(1);
     } else {
       Serial.println();
     }
@@ -162,26 +255,26 @@ void setupMqtt(int retries) {
     mqttClient.disconnect();
   }
 
-  if(config.mqtt_server.length() == 0) {
+  if(Config.mqtt_server.length() == 0) {
     return; // no server, no connection needed
   }
   
-  mqttLwtTopic = String(config.mqtt_channel + "status");
-  for(int i = 0; i < RELAY_COUNT; i++) {
+  mqttLwtTopic = String(Config.mqtt_channel + "status");
+  for(int i = 0; i < RELAYS_COUNT; i++) {
     // in MQTT relays are numbered starting with 1, not 0
-    mqttTopicRelayStatus[i] = String(config.mqtt_channel + "state/" + (i + 1));
-    mqttTopicRelayCommand[i] = String(config.mqtt_channel + "command/" + (i + 1));
+    mqttTopicRelayStatus[i] = String(Config.mqtt_channel + "state/" + (i + 1));
+    mqttTopicRelayCommand[i] = String(Config.mqtt_channel + "command/" + (i + 1));
   }
 
-  mqttClient.setServer(config.mqtt_server.c_str(), config.mqtt_port);
+  mqttClient.setServer(Config.mqtt_server.c_str(), Config.mqtt_port);
   mqttClient.setCallback(mqttSubscriptionCallback);
 
   const char *mqtt_user = nullptr;
   const char *mqtt_password = nullptr;
-  if (config.mqtt_user.length() > 0) 
-    mqtt_user = config.mqtt_user.c_str();
-  if (config.mqtt_user.length() > 0) 
-    mqtt_password = config.mqtt_password.c_str();
+  if (Config.mqtt_user.length() > 0) 
+    mqtt_user = Config.mqtt_user.c_str();
+  if (Config.mqtt_user.length() > 0) 
+    mqtt_password = Config.mqtt_password.c_str();
 
   // Build Client ID from MAC Address
   uint32_t chipId = ESP.getChipId();
@@ -215,7 +308,7 @@ void setupMqtt(int retries) {
 
   // And subscribe to respective channels
   if(mqttClient.connected()) {
-    for(int i = 0; i < RELAY_COUNT; i++) {
+    for(int i = 0; i < RELAYS_COUNT; i++) {
       Serial.printf("[MQTT] Publishing current state of relay %d.\n", i);
       String value = String(relayState[i]);
       mqttClient.publish(mqttTopicRelayStatus[i].c_str(), value.c_str());
@@ -319,12 +412,12 @@ String SendSettingsHTML(){
     
     "  <tr>\n"
     "    <th>Name</th>\n"
-    "    <td><input type=\"text\" name=\"relay_1_name\" value=\"" + (config.relay_1_name) + "\"></td>\n"
+    "    <td><input type=\"text\" name=\"relay_1_name\" value=\"" + (Config.relays[0].name) + "\"></td>\n"
     "  </tr>\n"
     
     "  <tr>\n"
     "    <th>Timeout</th>\n"
-    "    <td><input type=\"text\" name=\"relay_1_timeout\" value=\"" + (config.relay_1_timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
+    "    <td><input type=\"text\" name=\"relay_1_timeout\" value=\"" + (Config.relays[0].timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
     "  </tr>\n"
 
     "<tr>"
@@ -333,12 +426,12 @@ String SendSettingsHTML(){
 
     "  <tr>\n"
     "    <th>Name</th>\n"
-    "    <td><input type=\"text\" name=\"relay_2_name\" value=\"" + (config.relay_2_name) + "\"></td>\n"
+    "    <td><input type=\"text\" name=\"relay_2_name\" value=\"" + (Config.relays[1].name) + "\"></td>\n"
     "  </tr>\n"
 
     "  <tr>\n"
     "    <th>Timeout</th>\n"
-    "    <td><input type=\"text\" name=\"relay_2_timeout\" value=\"" + (config.relay_2_timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
+    "    <td><input type=\"text\" name=\"relay_2_timeout\" value=\"" + (Config.relays[1].timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
     "  </tr>\n"
 
   "<tr>"
@@ -346,27 +439,27 @@ String SendSettingsHTML(){
   "</tr>"
   "  <tr>\n"
   "    <th>Server</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_server\" value=\"" + (config.mqtt_server) + "\"></td>\n"
+  "    <td><input type=\"text\" name=\"mqtt_server\" value=\"" + (Config.mqtt_server) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
   "    <th>Port</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_port\" value=\"" + (config.mqtt_port) + "\"></td>\n"
+  "    <td><input type=\"text\" name=\"mqtt_port\" value=\"" + (Config.mqtt_port) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
   "    <th>User</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_user\" value=\"" + (config.mqtt_user) + "\"></td>\n"
+  "    <td><input type=\"text\" name=\"mqtt_user\" value=\"" + (Config.mqtt_user) + "\"></td>\n"
   "  </tr>\n"
 
     "  <tr>\n"
   "    <th>Password</th>\n"
-  "    <td><input type=\"password\" name=\"mqtt_password\" value=\"" + (config.mqtt_password) + "\"></td>\n"
+  "    <td><input type=\"password\" name=\"mqtt_password\" value=\"" + (Config.mqtt_password) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
   "    <th>Channel prefix</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_channel\" value=\"" + (config.mqtt_channel) + "\"></td>\n"
+  "    <td><input type=\"text\" name=\"mqtt_channel\" value=\"" + (Config.mqtt_channel) + "\"></td>\n"
   "  </tr>\n"
 
   "  <tr>\n"
@@ -408,8 +501,8 @@ String SendHTML(){
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
   ptr += "<script type=\"text/javascript\" src=\"scripts.js\"></script>\n";
   
-  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0) {
-    unsigned long remainingSecondsTimer1 = (relay1timeoutWhen - millis()) / 1000;
+  if(Config.relays[0].timeout > 0 && relayTimeoutWhen[0] > 0) {
+    unsigned long remainingSecondsTimer1 = (relayTimeoutWhen[0] - millis()) / 1000;
     ptr += "<script type=\"text/javascript\">\n"
           "window.onload = function () {\n"
           "  var timerSeconds = ";
@@ -421,8 +514,8 @@ String SendHTML(){
           "</script>";
   }
 
-  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0) {
-    unsigned long remainingSecondsTimer2 = (relay2timeoutWhen - millis()) / 1000;
+  if(Config.relays[1].timeout > 0 && relayTimeoutWhen[1] > 0) {
+    unsigned long remainingSecondsTimer2 = (relayTimeoutWhen[1] - millis()) / 1000;
     ptr += "<script type=\"text/javascript\">\n"
           "window.onload = function () {\n"
           "  var timerSeconds = ";
@@ -441,9 +534,9 @@ String SendHTML(){
   unsigned int frac;
 
   ptr += "<div>";
-  ptr += "<h2>" + config.relay_1_name + "</h2>";
+  ptr += "<h2>" + Config.relays[0].name + "</h2>";
 
-  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0) {
+  if(Config.relays[0].timeout > 0 && relayTimeoutWhen[0] > 0) {
     ptr += "<h3 id=\"relay_1_timer\"></h3>";
   }
 
@@ -458,11 +551,11 @@ String SendHTML(){
   }
   ptr += "</td></tr>";
 
-  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0) {
+  if(Config.relays[0].timeout > 0 && relayTimeoutWhen[0] > 0) {
     ptr += "<tr>"
         "<th>Timer off after:</th>"
         "<td>";
-    ptr += millisToString(relay1timeoutWhen - millis());
+    ptr += millisToString(relayTimeoutWhen[0] - millis());
     ptr += "</td></tr>";
   }
 
@@ -492,9 +585,9 @@ String SendHTML(){
   ptr += "</div>";
 
   ptr += "<div>";
-  ptr += "<h2>" + config.relay_2_name + "</h2>";
+  ptr += "<h2>" + Config.relays[1].name + "</h2>";
 
-  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0) {
+  if(Config.relays[1].timeout > 0 && relayTimeoutWhen[1] > 0) {
     ptr += "<h3 id=\"relay_2_timer\"></h3>";
   }
 
@@ -509,11 +602,11 @@ String SendHTML(){
   }
   ptr += "</td></tr>";
 
-  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0) {
+  if(Config.relays[1].timeout > 0 && relayTimeoutWhen[1] > 0) {
     ptr += "<tr>"
         "<th>Turn off after:</th>"
         "<td>";
-    ptr += millisToString(relay2timeoutWhen - millis());
+    ptr += millisToString(relayTimeoutWhen[1] - millis());
     ptr += "</td></tr>";
   }
 
@@ -560,54 +653,28 @@ void handle_saveConfig() {
   arg = server.arg("mqtt_port");
   arg.trim();
   
-  config.mqtt_port = (arg.length() == 0 ? 1883 : arg.toInt());
-  config.mqtt_server = server.arg("mqtt_server");
-  config.mqtt_user = server.arg("mqtt_user"); 
-  config.mqtt_password = server.arg("mqtt_password");
-  config.relay_1_name = server.arg("relay_1_name");
-  config.relay_2_name = server.arg("relay_2_name");
+  Config.mqtt_port = (arg.length() == 0 ? 1883 : arg.toInt());
+  Config.mqtt_server = server.arg("mqtt_server");
+  Config.mqtt_user = server.arg("mqtt_user"); 
+  Config.mqtt_password = server.arg("mqtt_password");
+  Config.relays[0].name = server.arg("relay_1_name");
+  Config.relays[1].name = server.arg("relay_2_name");
   
   arg = server.arg("relay_1_timeout");
   arg.trim();
-  config.relay_1_timeout = (arg.length() == 0 ? 0 : arg.toInt());
+  Config.relays[0].timeout = (arg.length() == 0 ? 0 : arg.toInt());
   
   arg = server.arg("relay_2_timeout");
   arg.trim();
-  config.relay_2_timeout = (arg.length() == 0 ? 0 : arg.toInt());
+  Config.relays[1].timeout = (arg.length() == 0 ? 0 : arg.toInt());
   
   String channel = server.arg("mqtt_channel");
   channel.trim();
   if(!channel.endsWith("/"))
     channel += "/";
-  config.mqtt_channel = channel;
+  Config.mqtt_channel = channel;
 
-  Serial.println(config.mqtt_server);
-
-  File configFile = SPIFFS.open(ConfigFileName, "w");
-
-  // Allocate a temporary JsonDocument
-  // Don't forget to change the capacity to match your requirements.
-  // Use arduinojson.org/assistant to compute the capacity.
-  StaticJsonDocument<512> jsonDocument;
-
-  // Set the values in the document
-  jsonDocument["mqtt_server"] = config.mqtt_server;
-  jsonDocument["mqtt_port"] = config.mqtt_port;
-  jsonDocument["mqtt_user"] = config.mqtt_user;
-  jsonDocument["mqtt_password"] = config.mqtt_password;
-  jsonDocument["mqtt_channel"] = config.mqtt_channel;
-  jsonDocument["relay_1_name"] = config.relay_1_name;
-  jsonDocument["relay_1_timeout"] = config.relay_1_timeout;
-  jsonDocument["relay_2_name"] = config.relay_2_name;
-  jsonDocument["relay_2_timeout"] = config.relay_2_timeout;
-
-  // Serialize JSON to file
-  if (serializeJson(jsonDocument, configFile) == 0) {
-    Serial.println(F("Failed to write settings file."));
-  }
-
-  // Close the file
-  configFile.close();
+  saveConfigurationFile();
 
   // Reconnect MQTT to reflect changes
   connectMqtt();
@@ -667,7 +734,7 @@ void meter1_triggered() {
 void meter_flowChanged(uint8_t pin) {
   int meterIndex = 0;
   bool meterFound = false;
-  for(meterIndex = 0; meterIndex < RELAY_COUNT; meterIndex++) {
+  for(meterIndex = 0; meterIndex < RELAYS_COUNT; meterIndex++) {
     if(METER_PINS[meterIndex] == pin) {
       meterFound = true;
       break;
@@ -682,11 +749,11 @@ void meter_flowChanged(uint8_t pin) {
   }
 
   if(mqttClient.connected()) {
-    String channelCurrent = String(config.mqtt_channel + meterIndex + "/currentFlow");
+    String channelCurrent = String(Config.mqtt_channel + meterIndex + "/currentFlow");
     String valueCurrent = String(meters[meterIndex].flowRate);
     mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
 
-    String channelTotal = String(config.mqtt_channel + meterIndex + "/totalFlow");
+    String channelTotal = String(Config.mqtt_channel + meterIndex + "/totalFlow");
     String valueTotal = String(meters[meterIndex].totalMilliLitres);
     mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
   }
@@ -718,7 +785,7 @@ void setup() {
   // Prepare meters...
   meters[0].begin(meter0_triggered);
   meters[1].begin(meter1_triggered);
-  for(int i = 0; i < RELAY_COUNT; i++) {
+  for(int i = 0; i < RELAYS_COUNT; i++) {
     meters[i].onFlowChanged(meter_flowChanged);
   }
 
@@ -754,37 +821,7 @@ void setup() {
   if (SPIFFS.begin()) {
     Serial.println("File system is mounted.");
 
-    // read config file
-    if(SPIFFS.exists(ConfigFileName))
-    {
-      Serial.println("Reading existing configuration.");
-
-      File configFile = SPIFFS.open(ConfigFileName, "r");
-
-      StaticJsonDocument<512> json;
-      DeserializationError error = deserializeJson(json, configFile);
-      if (error)
-        Serial.println(F("Failed to read file, using default configuration"));
-
-        // Copy values from the JsonDocument to the Config
-        config.mqtt_port = json["mqtt_port"] | 1883;
-        config.mqtt_server = json["mqtt_server"].as<String>();
-        config.mqtt_user = json["mqtt_user"].as<String>();
-        config.mqtt_password = json["mqtt_password"].as<String>();
-        config.mqtt_channel = json["mqtt_channel"].as<String>();
-        config.relay_1_name = json["relay_1_name"].as<String>();
-        if(config.relay_1_name.length() == 0) {
-          config.relay_1_name = "Relay 1";
-        }
-        config.relay_2_name = json["relay_2_name"].as<String>();
-        if(config.relay_2_name.length() == 0) {
-          config.relay_2_name = "Relay 2";
-        }
-        config.relay_1_timeout = json["relay_1_timeout"] | 0;
-        config.relay_2_timeout = json["relay_2_timeout"] | 0;
-
-        configFile.close();
-    }
+    readConfigurationFile();
   }
 
   // setup MQTT
@@ -814,22 +851,17 @@ void loop() {
   // Process MQTT communication
   mqttClient.loop();
   
-  for(int i = 0; i < RELAY_COUNT; i++) {
+  for(int i = 0; i < RELAYS_COUNT; i++) {
     // Continuously read the status of the button. 
     buttons[i].read();
 
     // process flow meters
     meters[i].loop();
-  }
 
-  // Process relay timeouts
-  if(config.relay_1_timeout > 0 && relay1timeoutWhen > 0 && relay1timeoutWhen < millis()) {
+    // Process relay timeouts
+    if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0 && relayTimeoutWhen[i] < millis()) {
     Serial.println("Configured timeout for relay 1 exceeded -> toggling");
-    toggleRelay(1);
-  }
-
-  if(config.relay_2_timeout > 0 && relay2timeoutWhen > 0 && relay2timeoutWhen < millis()) {
-    Serial.println("Configured timeout for relay 2 exceeded -> toggling");
-    toggleRelay(2);
+    toggleRelay(i);
+    }
   }
 }
