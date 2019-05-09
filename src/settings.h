@@ -12,7 +12,7 @@ struct Configuration {
   int mqtt_port;
   String mqtt_user;
   String mqtt_password;
-  String mqtt_channel;
+  String mqtt_channel_prefix;
 
   RelayConfiguration relays[RELAYS_COUNT];
 };

@@ -8,6 +8,7 @@
 #include <Ticker.h> // for LED status indications
 #include "settings.h" // Application settings
 #include "FlowMeter.h" // Flow meter
+#include "WebServer.h" // Web server content files
 
 // HW mapping
 #define PinMeter1 D5
@@ -29,14 +30,12 @@ const uint8_t METER_PINS[RELAYS_COUNT] = { PinMeter1, PinMeter2 };
 // schedules LED blinking
 Ticker ticker;
 
+// Management web interface
+ESP8266WebServer server(80);
+
+// Configuration
 const char *ConfigFileName = "/config.json";
 Configuration Config; 
-
-unsigned long relayTimeoutWhen[RELAYS_COUNT];
-//unsigned long relay1timeoutWhen;
-//unsigned long relay2timeoutWhen;
-
-ESP8266WebServer server(80);
 
 // MQTT
 WiFiClient espClient;
@@ -62,6 +61,10 @@ FlowMeter meters[RELAYS_COUNT] = {
 // litre/minute of flow.
 float calibrationFactor = 4.5;
 
+// millis when relays should be turned off
+unsigned long relayTimeoutWhen[RELAYS_COUNT];
+
+// Configuration handling
 void readConfigurationFile() {
   // set defaults
   for(int i = 0; i < RELAYS_COUNT; i++) {
@@ -87,7 +90,7 @@ void readConfigurationFile() {
     Config.mqtt_server = json["mqtt_server"].as<String>();
     Config.mqtt_user = json["mqtt_user"].as<String>();
     Config.mqtt_password = json["mqtt_password"].as<String>();
-    Config.mqtt_channel = json["mqtt_channel"].as<String>();
+    Config.mqtt_channel_prefix = json["mqtt_channel_prefix"].as<String>();
     
     if(json.containsKey("relays")) {
       JsonArray relays = json["relays"].as<JsonArray>();
@@ -131,7 +134,7 @@ void saveConfigurationFile() {
   jsonDocument["mqtt_port"] = Config.mqtt_port;
   jsonDocument["mqtt_user"] = Config.mqtt_user;
   jsonDocument["mqtt_password"] = Config.mqtt_password;
-  jsonDocument["mqtt_channel"] = Config.mqtt_channel;
+  jsonDocument["mqtt_channel_prefix"] = Config.mqtt_channel_prefix;
 
   // and per relay
   JsonArray relays = jsonDocument.createNestedArray("relays");
@@ -167,6 +170,7 @@ void toggleRelay(int id) {
   int newValue = !currentValue;
 
   Serial.printf("Toggling relay #%i from %i to %i", id, currentValue, newValue);
+  Serial.println();
 
   // Do the toggle
   // HIGH (0x1) = OFF, LOW (0x0) = ON
@@ -180,23 +184,6 @@ void toggleRelay(int id) {
   } else {
     relayTimeoutWhen[id] = 0;
   }
-/*
-  if(id == 1) {
-    if(relayState[0] && Config.relay_1_timeout > 0) { // if enabling and is timeout set, activate
-      relay1timeoutWhen = millis() + (Config.relay_1_timeout * 60 * 1000); // timeout in settings is in minutes
-    } else {
-      relay1timeoutWhen = 0;
-    }
-
-  } else if (id == 2) {
-    if(relayState[1] && Config.relay_2_timeout > 0) { // if enabling and is timeout set, activate
-      relay2timeoutWhen = millis() + (Config.relay_2_timeout * 60 * 1000); // timeout in settings is in minutes
-    } else {
-      relay2timeoutWhen = 0;
-    }
-  }
-*/
-  Serial.println();
 
   // And publish state update via MQTT
   if(mqttClient.connected()) {
@@ -217,36 +204,28 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
   }
   Serial.println();
 
-  // check if we received topics for state change 
-  if (strcmp (mqttTopicRelayCommand[0].c_str(), topic) == 0) {
-    Serial.printf("Relay 1 state change requested to %c", payload[0]);
-    if(
-        (payload[0] == '1' && relayState[0] == false) ||
-        (payload[0] == '0' && relayState[0] == true)
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    if (strcmp (mqttTopicRelayCommand[i].c_str(), topic) == 0 && length > 0) {
+      Serial.printf("[MQTT] State of relay %i requested to %c", (i + 1), payload[0]);
+
+      if(
+        ((payload[0] == '1' || (strcmp((char *)payload, "ON")  == 0) ) && relayState[i] == false) ||
+        ((payload[0] == '0' || (strcmp((char *)payload, "OFF") == 0) ) && relayState[i] == true)
       ) {
-        Serial.print(", current state ");
-        Serial.print(relayState[0]);
-        Serial.println(" differs -> toggle");
-        toggleRelay(0);
-    } else {
+        Serial.printf(", current state %i differs -> toggle.", relayState[i]);
+       
+        toggleRelay(i);
+      } else {
+        Serial.print(" already current state.");
+      }
+
       Serial.println();
+      return;
     }
-  } else if (strcmp (mqttTopicRelayCommand[1].c_str(), topic) == 0) {
-    Serial.print("Relay 2 state change requested");
-    if(
-        (payload[0] == '1' && relayState[1] == false) ||
-        (payload[0] == '0' && relayState[1] == true)
-      ) {
-           Serial.print(", current state ");
-        Serial.print(relayState[1]);
-        Serial.println(" differs -> toggle");
-          toggleRelay(1);
-    } else {
-      Serial.println();
-    }
-  }  else {
-    Serial.println("[MQTT] No match for any action.");
   }
+
+  // If we get here, we've not matched anything in loop above
+  Serial.println("[MQTT] No match for any action.");
 }
 
 void setupMqtt(int retries) { 
@@ -259,11 +238,11 @@ void setupMqtt(int retries) {
     return; // no server, no connection needed
   }
   
-  mqttLwtTopic = String(Config.mqtt_channel + "status");
+  mqttLwtTopic = String(Config.mqtt_channel_prefix + "status");
   for(int i = 0; i < RELAYS_COUNT; i++) {
     // in MQTT relays are numbered starting with 1, not 0
-    mqttTopicRelayStatus[i] = String(Config.mqtt_channel + "state/" + (i + 1));
-    mqttTopicRelayCommand[i] = String(Config.mqtt_channel + "command/" + (i + 1));
+    mqttTopicRelayStatus[i] = String(Config.mqtt_channel_prefix + "state/" + (i + 1));
+    mqttTopicRelayCommand[i] = String(Config.mqtt_channel_prefix + "command/" + (i + 1));
   }
 
   mqttClient.setServer(Config.mqtt_server.c_str(), Config.mqtt_port);
@@ -283,7 +262,7 @@ void setupMqtt(int retries) {
 
   int retryCount = 0;
   while (!mqttClient.connected() && retryCount < retries) {
-      Serial.printf("[MQTT] Connecting (retry %d of %d)...", (retryCount + 1), retries);
+      Serial.printf("[MQTT] Connecting (retry %d of %d) with identity %s...", (retryCount + 1), retries, clientId);
       Serial.println();
   
       bool connectionState = false;
@@ -293,7 +272,7 @@ void setupMqtt(int retries) {
         Serial.println("[MQTT] Connected successfully.");  
 
         // publish online status to LWT
-        mqttClient.publish(mqttLwtTopic.c_str(), "Online");
+        mqttClient.publish(mqttLwtTopic.c_str(), "Online", true);
       } else {
         Serial.print("[MQTT] Connection failed with code: ");
         Serial.println(mqttClient.state());
@@ -321,7 +300,7 @@ void setupMqtt(int retries) {
   lastMqttConnectionRetryTime = millis();
 }
 
-void connectMqtt() {
+void reconnectMqtt() {
   setupMqtt(5); // By default try 5-times before gave up
 }
 
@@ -336,149 +315,6 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   ticker.attach(0.2, tickStatusLed);
 }
 
-String SendStylesheetContent() {
-  String ptr;
-
-  ptr += "html { font-family: Helvetica; display: inline-block; margin: 0px auto; text-align: center;}\n";
-  ptr += "body{margin-top: 50px;} h1 {color: #444444;margin: 50px auto 30px;} h3 {color: #444444;margin-bottom: 5px;}\n";
-  ptr += ".button {display: block;background-color: #1abc9c;border: none;color: white;padding: 13px 30px;text-decoration: none;font-size: 25px;margin: 0px auto 15px;cursor: pointer;border-radius: 4px;}\n";
-  ptr += ".button-on {background-color: #1abc9c;}\n";
-  ptr += ".button-on:active {background-color: #16a085;}\n";
-  ptr += ".button-off {background-color: #34495e;}\n";
-  ptr += ".button-off:active {background-color: #2c3e50;}\n";
-  ptr += ".settings-cell {text-align: center; font-size: 14pt; padding: 4px; padding-top: 20px}\n";
-  ptr += "th, td {text-align: left; font-size: 12pt}";
-  ptr += "input { padding: 5px; font-size: 12pt}";
-  ptr += "table {margin: 0 auto; margin-bottom: 20px}\n";
-  ptr += ".small { font-size: 75%}\n";
-  ptr += "p {font-size: 14px;color: #888;margin-bottom: 10px;}\n";
-
-  return ptr;
-}
-
-void handle_stylesheetFile() {
-  server.send(200, "text/css", SendStylesheetContent()); 
-}
-
-String SendJavascriptContent() {
-  String str = "";
-
-  str += "function startTimer(duration, display) {\n"
-    "var timer = duration, minutes, seconds;\n"
-    "setInterval(function () {\n"
-    "    minutes = parseInt(timer / 60, 10)\n"
-    "    seconds = parseInt(timer % 60, 10);\n"
-    "\n"
-    "    minutes = minutes < 10 ? \"0\" + minutes : minutes;\n"
-    "    seconds = seconds < 10 ? \"0\" + seconds : seconds;\n"
-    "\n"
-    "    display.textContent = minutes + \":\" + seconds;\n"
-    "\n"
-    "    if (--timer < 0) {\n"
-    "        display.textContent = \"\";\n"         
-    "    //    timer = duration;\n"
-    "    }\n"
-    "}, 1000);\n"
-    "}\n";
-
-  return str;
-}
-
-void handle_jsFile() {
-  server.send(200, "text/javascript", SendJavascriptContent());
-}
-
-String SendSettingsHTML(){
-  Serial.println("Sending Config HTML.");
-
-  String ptr = "<!DOCTYPE html> <html>\n";
-  ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr += "<title>Zavlažovač / Settings</title>\n";
-  ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
-  ptr += "</head>\n";
-  ptr += "<body><div class=\"page\">\n";
-  ptr += "<h1>Zavlažovač</h1>\n";
-  ptr += "<h2>Settings</h2>\n";
-  
-  if(server.hasArg("saved")) {
-    ptr += "<div style=\"text-align: center; margin: 20px; font-weight: bold\">Configuration was saved.</div>";
-  }
-
-  ptr +="<form method=\"post\" enctype=\"application/x-www-form-urlencoded\">\n";
-  ptr +="<table>\n"  
-    "<tr>"
-    " <th colspan=\"2\" class=\"settings-cell\">Relay 1</th>"
-    "</tr>"
-    
-    "  <tr>\n"
-    "    <th>Name</th>\n"
-    "    <td><input type=\"text\" name=\"relay_1_name\" value=\"" + (Config.relays[0].name) + "\"></td>\n"
-    "  </tr>\n"
-    
-    "  <tr>\n"
-    "    <th>Timeout</th>\n"
-    "    <td><input type=\"text\" name=\"relay_1_timeout\" value=\"" + (Config.relays[0].timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
-    "  </tr>\n"
-
-    "<tr>"
-    " <th colspan=\"2\" class=\"settings-cell\">Relay 2</th>"
-    "</tr>"
-
-    "  <tr>\n"
-    "    <th>Name</th>\n"
-    "    <td><input type=\"text\" name=\"relay_2_name\" value=\"" + (Config.relays[1].name) + "\"></td>\n"
-    "  </tr>\n"
-
-    "  <tr>\n"
-    "    <th>Timeout</th>\n"
-    "    <td><input type=\"text\" name=\"relay_2_timeout\" value=\"" + (Config.relays[1].timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
-    "  </tr>\n"
-
-  "<tr>"
-  "<th colspan=\"2\" class=\"settings-cell\">MQTT Settings</th>"
-  "</tr>"
-  "  <tr>\n"
-  "    <th>Server</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_server\" value=\"" + (Config.mqtt_server) + "\"></td>\n"
-  "  </tr>\n"
-
-  "  <tr>\n"
-  "    <th>Port</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_port\" value=\"" + (Config.mqtt_port) + "\"></td>\n"
-  "  </tr>\n"
-
-  "  <tr>\n"
-  "    <th>User</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_user\" value=\"" + (Config.mqtt_user) + "\"></td>\n"
-  "  </tr>\n"
-
-    "  <tr>\n"
-  "    <th>Password</th>\n"
-  "    <td><input type=\"password\" name=\"mqtt_password\" value=\"" + (Config.mqtt_password) + "\"></td>\n"
-  "  </tr>\n"
-
-  "  <tr>\n"
-  "    <th>Channel prefix</th>\n"
-  "    <td><input type=\"text\" name=\"mqtt_channel\" value=\"" + (Config.mqtt_channel) + "\"></td>\n"
-  "  </tr>\n"
-
-  "  <tr>\n"
-  "    <th class=\"settings-cell\" colspan=\"2\"><input class=\"button\" type=\"submit\" value=\"Save Changes\"></th>\n"
-  "  </tr>\n"
-
-  "  <tr>\n"
-  "    <th class=\"settings-cell\" colspan=\"2\"><a href=\"/\" class=\"button\">Back</a></th>\n"
-  "  </tr>\n"
-  "</table>\n";
-  
-  ptr +="</form>\n"
-        "</body>\n"
-        "</html>\n";
-  
-  return ptr;
-}
-
-// t is time in seconds = millis()/1000;
 char * millisToString(unsigned long millis)
 {
   unsigned long seconds = millis / 1000;
@@ -492,8 +328,100 @@ char * millisToString(unsigned long millis)
  return str;
 }
 
+void handle_stylesheetFile() {
+  server.send(200, "text/css", Web_StylesheetFileContent()); 
+}
+
+void handle_jsFile() {
+  server.send(200, "text/javascript", Web_JavascriptFileContent());
+}
+
+void handle_NotFound() {
+  server.send(404, "text/plain", "Not found");
+}
+
+String SendSettingsHTML(){
+  Serial.println("[HTTP] Sending /config page.");
+
+  String ptr = "<!DOCTYPE html> <html>\n";
+  ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
+  ptr += "<title>Zavlažovač / Settings</title>\n";
+  ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
+  ptr += "</head>\n";
+  ptr += "<body><div class=\"page\">\n";
+  ptr += "<h1>Zavlažovač</h1>\n";
+  ptr += "<h2>Settings</h2>\n";
+  
+  if(server.hasArg("saved")) {
+    ptr += "<div class=\"alert-box\">Configuration was saved.</div>";
+  }
+
+  ptr +="<form method=\"post\" enctype=\"application/x-www-form-urlencoded\">\n";
+  ptr +="<table>\n";
+
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    String id = String(i);
+
+    ptr += ""
+      "   <tr>\n"
+      "     <th colspan=\"2\" class=\"settings-cell\">Relay " + String(i + 1) + "</th>\n"
+      "   </tr>\n"
+      "  <tr>\n"
+      "    <th>Name</th>\n"
+      "    <td><input type=\"text\" name=\"relay_"+ id + "_name\" value=\"" + (Config.relays[i].name) + "\"></td>\n"
+      "  </tr>\n"
+      "  <tr>\n"
+      "    <th>Timeout</th>\n"
+      "    <td><input type=\"text\" name=\"relay_" + id + "_timeout\" value=\"" + (Config.relays[i].timeout) + "\"> min.<div class=\"small\">In minutes, 0 means no timeout.</div></td>\n"
+      "  </tr>\n";
+  }
+
+   ptr += ""
+    "<tr>"
+    "<th colspan=\"2\" class=\"settings-cell\">MQTT Settings</th>"
+    "</tr>"
+    "  <tr>\n"
+    "    <th>Server</th>\n"
+    "    <td><input type=\"text\" name=\"mqtt_server\" value=\"" + (Config.mqtt_server) + "\"></td>\n"
+    "  </tr>\n"
+
+    "  <tr>\n"
+    "    <th>Port</th>\n"
+    "    <td><input type=\"text\" name=\"mqtt_port\" value=\"" + (Config.mqtt_port) + "\"></td>\n"
+    "  </tr>\n"
+
+    "  <tr>\n"
+    "    <th>User</th>\n"
+    "    <td><input type=\"text\" name=\"mqtt_user\" value=\"" + (Config.mqtt_user) + "\"></td>\n"
+    "  </tr>\n"
+
+      "  <tr>\n"
+    "    <th>Password</th>\n"
+    "    <td><input type=\"password\" name=\"mqtt_password\" value=\"" + (Config.mqtt_password) + "\"></td>\n"
+    "  </tr>\n"
+
+    "  <tr>\n"
+    "    <th>Channel prefix</th>\n"
+    "    <td><input type=\"text\" name=\"mqtt_channel_prefix\" value=\"" + (Config.mqtt_channel_prefix) + "\"></td>\n"
+    "  </tr>\n"
+
+    "  <tr>\n"
+    "    <th class=\"settings-cell\" colspan=\"2\"><input class=\"button\" type=\"submit\" value=\"Save Changes\"></th>\n"
+    "  </tr>\n"
+
+    "  <tr>\n"
+    "    <th class=\"settings-cell\" colspan=\"2\"><a href=\"/\" class=\"button\">Back</a></th>\n"
+    "  </tr>\n"
+    "</table>\n"
+    "</form>\n"
+    "</body>\n"
+    "</html>\n";
+  
+  return ptr;
+}
+
 String SendHTML(){
-  Serial.println("Sending homepage HTML.");
+  Serial.println("[HTTP] Sending homepage.");
 
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
@@ -501,30 +429,17 @@ String SendHTML(){
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
   ptr += "<script type=\"text/javascript\" src=\"scripts.js\"></script>\n";
   
-  if(Config.relays[0].timeout > 0 && relayTimeoutWhen[0] > 0) {
-    unsigned long remainingSecondsTimer1 = (relayTimeoutWhen[0] - millis()) / 1000;
-    ptr += "<script type=\"text/javascript\">\n"
-          "window.onload = function () {\n"
-          "  var timerSeconds = ";
-    ptr += remainingSecondsTimer1;
-    ptr += ";\n"
-          "  var display = document.querySelector('#relay_1_timer');\n"
-          "   startTimer(timerSeconds, display);\n"
-          "};\n"
-          "</script>";
-  }
-
-  if(Config.relays[1].timeout > 0 && relayTimeoutWhen[1] > 0) {
-    unsigned long remainingSecondsTimer2 = (relayTimeoutWhen[1] - millis()) / 1000;
-    ptr += "<script type=\"text/javascript\">\n"
-          "window.onload = function () {\n"
-          "  var timerSeconds = ";
-    ptr += remainingSecondsTimer2;
-    ptr += ";\n"
-          "  var display = document.querySelector('#relay_2_timer');\n"
-          "   startTimer(timerSeconds, display);\n"
-          "};\n"
-          "</script>";
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
+      unsigned long remainingSecondsTimer = (relayTimeoutWhen[i] - millis()) / 1000;
+      ptr += "<script type=\"text/javascript\">\n"
+             "  window.onload = function () {\n"
+             "    var timerSeconds = " + String(remainingSecondsTimer) + ";\n"
+             "    var display = document.querySelector('#relay_" + String(i) + "_timer');\n"
+             "    startTimer(timerSeconds, display);\n"
+             "  };\n"
+             "</script>";
+    }
   }
 
   ptr += "</head>\n";
@@ -533,109 +448,55 @@ String SendHTML(){
   
   unsigned int frac;
 
-  ptr += "<div>";
-  ptr += "<h2>" + Config.relays[0].name + "</h2>";
+  for(int i = 0; i< RELAYS_COUNT; i++) {
+    ptr += "<div>";
+    ptr += "<h2>" + Config.relays[i].name + "</h2>";
 
-  if(Config.relays[0].timeout > 0 && relayTimeoutWhen[0] > 0) {
-    ptr += "<h3 id=\"relay_1_timer\"></h3>";
-  }
+    if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
+      ptr += "<h3 id=\"relay_" + String(i) + "_timer\"></h3>";
+    }
 
-  ptr += "<table>";
-  ptr += "<tr>"
-         "<td colspan=\"2\" class=\"settings-cell\">";
-
-  if(relayState[0] == true) {
-    ptr += "<a class=\"button button-on\" href=\"/toggle?id=1\">Turn OFF</a>";
-  } else {
-    ptr += "<a class=\"button button-off\" href=\"/toggle?id=1\">Turn ON</a>";
-  }
-  ptr += "</td></tr>";
-
-  if(Config.relays[0].timeout > 0 && relayTimeoutWhen[0] > 0) {
+    ptr += "<table>";
     ptr += "<tr>"
-        "<th>Timer off after:</th>"
-        "<td>";
-    ptr += millisToString(relayTimeoutWhen[0] - millis());
+          "<td colspan=\"2\" class=\"settings-cell\">";
+
+    if(relayState[i] == true) {
+      ptr += "<a class=\"button button-on\" href=\"/toggle?id=" + String(i) + "\">Turn OFF</a>";
+    } else {
+      ptr += "<a class=\"button button-off\" href=\"/toggle?id=" + String(i) + "\">Turn ON</a>";
+    }
     ptr += "</td></tr>";
+
+    if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
+      ptr += "<tr>"
+          "<th>Timer off after:</th>"
+          "<td>";
+      ptr += millisToString(relayTimeoutWhen[i] - millis());
+      ptr += "</td></tr>";
+    }
+
+      ptr += "<tr>"
+          "<th>Flow rate:</th>"
+          "<td>";
+    ptr += int(meters[i].flowRate); // Print the integer part of the variable
+    ptr += "."; // Print the decimal point
+    // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
+    frac = (meters[i].flowRate - int(meters[i].flowRate)) * 10;
+    ptr += frac; // Print the fractional part of the variable
+    ptr += " L/min</td>"
+           "</tr>"
+           "<tr>"
+           "<th>Current Liquid Flowing:</th>"
+           "<td>" + String(meters[i].flowMilliLitres) + " mL/Sec</td>"
+           "</tr>"
+           "<tr>"
+           "<th>Output Liquid Quantity:</th>"
+           "<td>" + String(meters[i].totalMilliLitres) + " mL</td>"
+           "</tr>";
+    ptr += "</table>";
+    ptr += "</div>";
   }
-
-    ptr += "<tr>"
-        "<th>Flow rate:</th>"
-        "<td>";
-  ptr += int(meters[0].flowRate); // Print the integer part of the variable
-  ptr += "."; // Print the decimal point
-  // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-  frac = (meters[0].flowRate - int(meters[0].flowRate)) * 10;
-  ptr += frac; // Print the fractional part of the variable
-  ptr += " L/min</td>"
-        "</tr>"
-        "<tr>"
-        "<th>Current Liquid Flowing:</th>"
-        "<td>";
-  ptr += meters[0].flowMilliLitres;
-  ptr += " mL/Sec</td>"
-        "</tr>"
-        "<tr>"
-        "<th>Output Liquid Quantity:</th>"
-        "<td>";
-  ptr += meters[0].totalMilliLitres;
-  ptr += " mL</td>"
-         "</tr>";
-  ptr += "</table>";
-  ptr += "</div>";
-
-  ptr += "<div>";
-  ptr += "<h2>" + Config.relays[1].name + "</h2>";
-
-  if(Config.relays[1].timeout > 0 && relayTimeoutWhen[1] > 0) {
-    ptr += "<h3 id=\"relay_2_timer\"></h3>";
-  }
-
-  ptr += "<table>";
-  ptr += "<tr>"
-         "<td colspan=\"2\" class=\"settings-cell\">";
-  
-  if(relayState[1] == true) {
-    ptr += "<a class=\"button button-on\" href=\"/toggle?id=2\">Turn OFF</a>";
-  } else {
-    ptr += "<a class=\"button button-off\" href=\"/toggle?id=2\">Turn ON</a>";
-  }
-  ptr += "</td></tr>";
-
-  if(Config.relays[1].timeout > 0 && relayTimeoutWhen[1] > 0) {
-    ptr += "<tr>"
-        "<th>Turn off after:</th>"
-        "<td>";
-    ptr += millisToString(relayTimeoutWhen[1] - millis());
-    ptr += "</td></tr>";
-  }
-
-  ptr += "<tr>"
-         "<th>Flow rate:</th>"
-         "<td>";
-  ptr += int(meters[1].flowRate); // Print the integer part of the variable
-  ptr += "."; // Print the decimal point
-  // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
-  frac = (meters[1].flowRate - int(meters[1].flowRate)) * 10;
-  ptr += frac; // Print the fractional part of the variable
-  ptr += " L/min</td>"
-        "</tr>"
-        "<tr>"
-        "<th>Current Liquid Flowing:</th>"
-        "<td>";
-  ptr += meters[1].flowMilliLitres / 1000;
-  ptr += " L/Sec</td>"
-        "</tr>"
-        "<tr>"
-        "<th>Output Liquid Quantity:</th>"
-        "<td>";
-  ptr += meters[1].totalMilliLitres / 1000;
-  ptr += " L</td>"
-         "</tr>";
-  ptr += "</table>";
-
-  ptr += "</div>";
-
+ 
   ptr +="<hr>\n";
   ptr +="<a class=\"button\" href=\"/config\">Configuration</a>\n";
   ptr +="</div></body>\n";
@@ -648,36 +509,44 @@ void handle_pageConfig() {
 }
 
 void handle_saveConfig() {
-  // Save runtime data
   String arg;
   arg = server.arg("mqtt_port");
   arg.trim();
   
   Config.mqtt_port = (arg.length() == 0 ? 1883 : arg.toInt());
-  Config.mqtt_server = server.arg("mqtt_server");
-  Config.mqtt_user = server.arg("mqtt_user"); 
-  Config.mqtt_password = server.arg("mqtt_password");
-  Config.relays[0].name = server.arg("relay_1_name");
-  Config.relays[1].name = server.arg("relay_2_name");
   
-  arg = server.arg("relay_1_timeout");
+  arg = server.arg("mqtt_server");
   arg.trim();
-  Config.relays[0].timeout = (arg.length() == 0 ? 0 : arg.toInt());
-  
-  arg = server.arg("relay_2_timeout");
+  Config.mqtt_server = arg;
+
+  arg = server.arg("mqtt_user");
   arg.trim();
-  Config.relays[1].timeout = (arg.length() == 0 ? 0 : arg.toInt());
-  
-  String channel = server.arg("mqtt_channel");
+  Config.mqtt_user = arg; 
+
+  arg = server.arg("mqtt_password");
+  arg.trim();
+  Config.mqtt_password = arg;
+
+  String channel = server.arg("mqtt_channel_prefix");
   channel.trim();
   if(!channel.endsWith("/"))
     channel += "/";
-  Config.mqtt_channel = channel;
+  Config.mqtt_channel_prefix = channel;
+
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    arg = server.arg("relay_" + String(i) + "_timeout");
+    arg.trim();
+    Config.relays[i].timeout = (arg.length() == 0 ? 0 : arg.toInt());
+
+    arg = server.arg("relay_" + String(i) + "_name");
+    arg.trim();
+    Config.relays[i].name = arg;
+  }
 
   saveConfigurationFile();
 
   // Reconnect MQTT to reflect changes
-  connectMqtt();
+  reconnectMqtt();
 
   server.sendHeader("Location", "/config?saved=1", true);
   server.send(303, "text/plain"); 
@@ -689,22 +558,20 @@ void handle_OnConnect() {
 
 void handle_toggle() {
   if(!server.hasArg("id")) {
-    server.send(400, "text/html", "Missing required id parameter.");
+    server.send(400, "text/html", "Missing required parameter ID.");
     return;
   }
 
-  if(server.arg("id") == "1")
-    toggleRelay(1);
+  int id = server.arg("id").toInt();
+  if(id >= RELAYS_COUNT) {
+    server.send(400, "text/html", "Invalid ID of relay was sent.");
+    return;
+  }
 
-  if(server.arg("id") == "2")
-    toggleRelay(2);
+  toggleRelay(id);
 
   server.sendHeader("Location", "/");
   server.send(303, "text/plain");
-}
-
-void handle_NotFound() {
-  server.send(404, "text/plain", "Not found");
 }
 
 // Callback function to be called when the button is pressed.
@@ -749,11 +616,11 @@ void meter_flowChanged(uint8_t pin) {
   }
 
   if(mqttClient.connected()) {
-    String channelCurrent = String(Config.mqtt_channel + meterIndex + "/currentFlow");
+    String channelCurrent = String(Config.mqtt_channel_prefix + meterIndex + "/currentFlow");
     String valueCurrent = String(meters[meterIndex].flowRate);
     mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
 
-    String channelTotal = String(Config.mqtt_channel + meterIndex + "/totalFlow");
+    String channelTotal = String(Config.mqtt_channel_prefix + meterIndex + "/totalFlow");
     String valueTotal = String(meters[meterIndex].totalMilliLitres);
     mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
   }
@@ -817,15 +684,15 @@ void setup() {
   // Keep status LED on
   digitalWrite(PinLedStatus, HIGH);
 
-  // init values from file system
+  // Init values from file system
   if (SPIFFS.begin()) {
     Serial.println("File system is mounted.");
 
     readConfigurationFile();
   }
 
-  // setup MQTT
-  connectMqtt();
+  // Reconnect MQTT if needed
+  reconnectMqtt();
 
   // Web server pages
   server.on("/", handle_OnConnect);
@@ -836,7 +703,7 @@ void setup() {
   server.on("/scripts.js", handle_jsFile);
   server.onNotFound(handle_NotFound);  
   server.begin();
-  Serial.println("HTTP server started");
+  Serial.println("[HTTP] Server started.");
 }
 
 void loop() {
