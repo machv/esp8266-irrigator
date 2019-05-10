@@ -426,6 +426,36 @@ String generateSettingsHtml(){
   return ptr;
 }
 
+String generateJsonApiResponse() {
+   StaticJsonDocument<640> jsonDocument;
+  
+  JsonArray relays = jsonDocument.createNestedArray("relays");
+  for(int i = 0; i < RELAYS_COUNT; i++) {
+    JsonObject relay = relays.createNestedObject();
+    relay["timeout"] = 0;
+    if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
+      relay["timeout"] = (relayTimeoutWhen[i] - millis()) / 1000;
+    }
+    relay["state"] = relayState[i];
+    relay["flowMilliLitres"] = meters[i].flowMilliLitres;
+    relay["totalMilliLitres"] = meters[i].totalMilliLitres;
+    relay["flowRate"] = meters[i].flowRate;
+  }
+
+  String json;
+  serializeJson(jsonDocument, json);
+
+  return json;
+}
+
+void handle_api() {
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.sendHeader("Pragma", "no-cache");
+  server.sendHeader("Expires", "-1");
+
+  server.send(200, "application/json", generateJsonApiResponse()); 
+}
+
 String generateHomepageHtml(){
   Serial.println("[HTTP] Sending homepage.");
 
@@ -435,22 +465,26 @@ String generateHomepageHtml(){
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
   ptr += "<script type=\"text/javascript\" src=\"scripts.js\"></script>\n";
   
+  ptr += "<script type=\"text/javascript\">\n"
+         "var timerSeconds, display;\n"
+         "  window.onload = function () {\n";
   for(int i = 0; i < RELAYS_COUNT; i++) {
     if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
       unsigned long remainingSecondsTimer = (relayTimeoutWhen[i] - millis()) / 1000;
-      ptr += "<script type=\"text/javascript\">\n"
-             "  window.onload = function () {\n"
-             "    var timerSeconds = " + String(remainingSecondsTimer) + ";\n"
-             "    var display = document.querySelector('#relay_" + String(i) + "_timer');\n"
-             "    startTimer(timerSeconds, display);\n"
-             "  };\n"
-             "</script>";
+      ptr += ""
+             "    timerSeconds = " + String(remainingSecondsTimer) + ";\n"
+             "    display = document.querySelector('#r" + String(i) + "_timer');\n"
+             "    intervals[" + String(i) + "] = startTimer(timerSeconds, display);\n";
     }
   }
-
+  ptr += ""
+         "    // start updating of the current UI values\n"
+         "    refresher(5000);\n"
+         "  };\n";
+  ptr += "</script>\n";
   ptr += "</head>\n";
   ptr += "<body>\n<div class=\"page\">";
-  ptr += "<h1>Zavlažovač</h1>\n";
+  ptr += "<h1>Irrigation</h1>\n";
   
   unsigned int frac;
 
@@ -458,46 +492,56 @@ String generateHomepageHtml(){
     ptr += "<div>";
     ptr += "<h2>" + Config.relays[i].name + "</h2>";
 
-    if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
-      ptr += "<h3 id=\"relay_" + String(i) + "_timer\"></h3>";
-    }
+    //if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
+    ptr += "<h3 id=\"r" + String(i) + "_timer\"></h3>";
+    //}
 
     ptr += "<table>";
+    ptr += "<tr>"
+          "<td colspan=\"2\" id=\"r" + String(i) + "_state\" class=\"settings-cell relay-state\">";
+
+    if(relayState[i] == true) {
+      ptr += "ON";
+    } else {
+      ptr += "OFF";
+    }
+    ptr += "</td></tr>";
+
     ptr += "<tr>"
           "<td colspan=\"2\" class=\"settings-cell\">";
 
     if(relayState[i] == true) {
-      ptr += "<a class=\"button button-on\" href=\"/toggle?id=" + String(i) + "\">Turn OFF</a>";
+      ptr += "<a id=\"r" + String(i) + "_btn\" class=\"button button-on\" href=\"/toggle?id=" + String(i) + "\">Turn OFF</a>";
     } else {
-      ptr += "<a class=\"button button-off\" href=\"/toggle?id=" + String(i) + "\">Turn ON</a>";
+      ptr += "<a id=\"r" + String(i) + "_btn\" class=\"button button-off\" href=\"/toggle?id=" + String(i) + "\">Turn ON</a>";
     }
     ptr += "</td></tr>";
 
     if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
       ptr += "<tr>"
           "<th>Timer off after:</th>"
-          "<td>";
+          "<td id=\"r" + String(i) + "_timerWhen\">";
       ptr += millisToString(relayTimeoutWhen[i] - millis());
       ptr += "</td></tr>";
     }
 
       ptr += "<tr>"
           "<th>Flow rate:</th>"
-          "<td>";
+          "<td><span id=\"r" + String(i) + "_flowRate\">";
     ptr += int(meters[i].flowRate); // Print the integer part of the variable
     ptr += "."; // Print the decimal point
     // Determine the fractional part. The 10 multiplier gives us 1 decimal place.
     frac = (meters[i].flowRate - int(meters[i].flowRate)) * 10;
     ptr += frac; // Print the fractional part of the variable
-    ptr += " L/min</td>"
+    ptr += "</span> L/min</td>"
            "</tr>"
            "<tr>"
            "<th>Current Liquid Flowing:</th>"
-           "<td>" + String(meters[i].flowMilliLitres) + " mL/Sec</td>"
+           "<td><span id=\"r" + String(i) + "_flowMilliLitres\">" + String(meters[i].flowMilliLitres) + "</span> mL/Sec</td>"
            "</tr>"
            "<tr>"
            "<th>Output Liquid Quantity:</th>"
-           "<td>" + String(meters[i].totalMilliLitres) + " mL</td>"
+           "<td><span id=\"r" + String(i) + "_totalMilliLitres\">" + String(meters[i].totalMilliLitres) + "</span> mL</td>"
            "</tr>";
     ptr += "</table>";
     ptr += "</div>";
@@ -714,6 +758,7 @@ void setup() {
   server.on("/", handle_homepage);
   server.on("/config", HTTP_GET, handle_pageConfig);
   server.on("/config", HTTP_POST, handle_saveConfig);
+  server.on("/api/current", handle_api);
   server.on("/restart", handle_restart);
   server.on("/toggle", handle_toggle);
   server.on("/style.css", handle_cssFile);

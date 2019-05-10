@@ -85,3 +85,8 @@ p {
   color: #888;
   margin-bottom: 10px;
 }
+.relay-state {
+  font-weight: bold;
+  text-align: center;
+  font-size: 200%;
+}
