@@ -115,17 +115,6 @@ void readConfigurationFile() {
       }
     }
 
-//    Config.relay_1_name = json["relay_1_name"].as<String>();
-//    if(Config.relay_1_name.length() == 0) {
-//      Config.relay_1_name = "Relay 1";
-//    }
-//    Config.relay_2_name = json["relay_2_name"].as<String>();
-//    if(Config.relay_2_name.length() == 0) {
-//      Config.relay_2_name = "Relay 2";
-//    }
-//    Config.relay_1_timeout = json["relay_1_timeout"] | 0;
-//    Config.relay_2_timeout = json["relay_2_timeout"] | 0;
-
     configFile.close();
   }
 }
@@ -135,8 +124,6 @@ void saveConfigurationFile() {
 
   File configFile = SPIFFS.open(ConfigFileName, "w");
 
-  // Allocate a temporary JsonDocument
-  // Don't forget to change the capacity to match your requirements.
   // Use arduinojson.org/assistant to compute the capacity.
   StaticJsonDocument<640> jsonDocument;
 
