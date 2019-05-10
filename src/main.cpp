@@ -229,6 +229,11 @@ void mqttSubscriptionCallback(char* topic, byte* payload, unsigned int length) {
 void setupMqtt(int retries) { 
   if(mqttClient.connected()) {
     Serial.println("[MQTT] Disconnecting...");
+
+    // publish offline status to LWT (as when gracefully Disconnecting no LWT is sent)
+    mqttClient.publish(mqttLwtTopic.c_str(), "Offline", true);
+
+    // and gracefully disconnect
     mqttClient.disconnect();
   }
 
