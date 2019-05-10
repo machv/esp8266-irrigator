@@ -505,6 +505,10 @@ String generateHomepageHtml(){
  
   ptr +="<hr>\n";
   ptr +="<a class=\"button\" href=\"/config\">Configuration</a>\n";
+
+  ptr += "<p><form action='/restart' method='get' onsubmit='return confirm(\"Do you really want to restart the device?\");'>"
+        "<button name='restart' class='button button-danger'>Restart</button></form></p>";
+
   ptr +="</div></body>\n";
   ptr +="</html>\n";
   return ptr;
@@ -560,6 +564,12 @@ void handle_saveConfig() {
 
 void handle_homepage() {
   server.send(200, "text/html", generateHomepageHtml()); 
+}
+
+void handle_restart() {
+  server.send(200, "text/html", "<strong>Restarting the device...</strong>"); 
+  delay(200);
+  ESP.restart();
 }
 
 void handle_toggle() {
@@ -704,6 +714,7 @@ void setup() {
   server.on("/", handle_homepage);
   server.on("/config", HTTP_GET, handle_pageConfig);
   server.on("/config", HTTP_POST, handle_saveConfig);
+  server.on("/restart", handle_restart);
   server.on("/toggle", handle_toggle);
   server.on("/style.css", handle_cssFile);
   server.on("/scripts.js", handle_jsFile);
