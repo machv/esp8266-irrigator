@@ -8,7 +8,6 @@
 #include <Ticker.h> // for LED status indications
 #include "settings.h" // Application settings
 #include "FlowMeter.h" // Flow meter
-#include "WebServer.h" // Web server content files
 
 // HW mapping
 #define PinMeter1 D5
