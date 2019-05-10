@@ -32,6 +32,8 @@ Ticker ticker;
 
 // Management web interface
 ESP8266WebServer server(80);
+#define CSS_FILE "/style.css"
+#define JS_FILE "/scripts.js"
 
 // Configuration
 const char *ConfigFileName = "/config.json";
@@ -64,6 +66,14 @@ float calibrationFactor = 4.5;
 // millis when relays should be turned off
 unsigned long relayTimeoutWhen[RELAYS_COUNT];
 
+File GetFile(String fileName) {
+  File file;
+  if (SPIFFS.exists(fileName)) {
+    file = SPIFFS.open(fileName, "r");
+  }
+  return file;
+}
+
 // Configuration handling
 void readConfigurationFile() {
   // set defaults
@@ -81,8 +91,10 @@ void readConfigurationFile() {
 
     StaticJsonDocument<512> json;
     DeserializationError error = deserializeJson(json, configFile);
-    if (error)
+    if (error) {
       Serial.println(F("Failed to read file, using default configuration"));
+      return;
+    }
 
     // Copy values from the JsonDocument to the Config
     // https://arduinojson.org/v6/example/config/
@@ -315,32 +327,35 @@ void configModeCallback (WiFiManager *myWiFiManager) {
   ticker.attach(0.2, tickStatusLed);
 }
 
-char * millisToString(unsigned long millis)
-{
+char * millisToString(unsigned long millis) {
   unsigned long seconds = millis / 1000;
   static char str[12];
   long h = seconds / 3600;
   seconds = seconds % 3600;
   int m = seconds / 60;
   int s = seconds % 60;
- sprintf(str, "%02ld:%02d:%02d", h, m, s);
+  sprintf(str, "%02ld:%02d:%02d", h, m, s);
  
- return str;
+  return str;
 }
 
-void handle_stylesheetFile() {
-  server.send(200, "text/css", Web_StylesheetFileContent()); 
+void handle_cssFile() {
+  File cssFile = GetFile(CSS_FILE);
+  server.streamFile(cssFile, "text/css");
+  cssFile.close();
 }
 
 void handle_jsFile() {
-  server.send(200, "text/javascript", Web_JavascriptFileContent());
+  File jsFile = GetFile(JS_FILE);
+  server.streamFile(jsFile, "text/css");
+  jsFile.close();
 }
 
-void handle_NotFound() {
+void handle_notFound() {
   server.send(404, "text/plain", "Not found");
 }
 
-String SendSettingsHTML(){
+String generateSettingsHtml(){
   Serial.println("[HTTP] Sending /config page.");
 
   String ptr = "<!DOCTYPE html> <html>\n";
@@ -420,7 +435,7 @@ String SendSettingsHTML(){
   return ptr;
 }
 
-String SendHTML(){
+String generateHomepageHtml(){
   Serial.println("[HTTP] Sending homepage.");
 
   String ptr = "<!DOCTYPE html> <html>\n";
@@ -505,7 +520,7 @@ String SendHTML(){
 }
 
 void handle_pageConfig() {
-  server.send(200, "text/html", SendSettingsHTML()); 
+  server.send(200, "text/html", generateSettingsHtml()); 
 }
 
 void handle_saveConfig() {
@@ -552,8 +567,8 @@ void handle_saveConfig() {
   server.send(303, "text/plain"); 
 }
 
-void handle_OnConnect() {
-  server.send(200, "text/html", SendHTML()); 
+void handle_homepage() {
+  server.send(200, "text/html", generateHomepageHtml()); 
 }
 
 void handle_toggle() {
@@ -695,13 +710,13 @@ void setup() {
   reconnectMqtt();
 
   // Web server pages
-  server.on("/", handle_OnConnect);
+  server.on("/", handle_homepage);
   server.on("/config", HTTP_GET, handle_pageConfig);
   server.on("/config", HTTP_POST, handle_saveConfig);
   server.on("/toggle", handle_toggle);
-  server.on("/style.css", handle_stylesheetFile);
+  server.on("/style.css", handle_cssFile);
   server.on("/scripts.js", handle_jsFile);
-  server.onNotFound(handle_NotFound);  
+  server.onNotFound(handle_notFound);  
   server.begin();
   Serial.println("[HTTP] Server started.");
 }
@@ -727,8 +742,8 @@ void loop() {
 
     // Process relay timeouts
     if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0 && relayTimeoutWhen[i] < millis()) {
-    Serial.println("Configured timeout for relay 1 exceeded -> toggling");
-    toggleRelay(i);
+      Serial.println("Configured timeout for relay 1 exceeded -> toggling");
+      toggleRelay(i);
     }
   }
 }

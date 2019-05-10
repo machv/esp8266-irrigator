@@ -1,6 +1,6 @@
 #include "WebServer.h"
 #include <Arduino.h>
-
+/*
 String Web_StylesheetFileContent() {
   String ptr;
 
@@ -21,7 +21,8 @@ String Web_StylesheetFileContent() {
 
   return ptr;
 }
-
+*/
+/*
 String Web_JavascriptFileContent() {
   String str;
 
@@ -45,3 +46,4 @@ String Web_JavascriptFileContent() {
 
   return str;
 }
+*/
