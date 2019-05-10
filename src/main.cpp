@@ -240,7 +240,7 @@ void setupMqtt(int retries) {
   for(int i = 0; i < RELAYS_COUNT; i++) {
     // in MQTT relays are numbered starting with 1, not 0
     mqttTopicRelayStatus[i] = String(Config.mqtt_channel_prefix + "state/" + (i + 1));
-    mqttTopicRelayCommand[i] = String(Config.mqtt_channel_prefix + "command/" + (i + 1));
+    mqttTopicRelayCommand[i] = String(Config.mqtt_channel_prefix + "command/" + (i + 1)) + "/power";
   }
 
   mqttClient.setServer(Config.mqtt_server.c_str(), Config.mqtt_port);
