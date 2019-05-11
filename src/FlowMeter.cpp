@@ -15,13 +15,18 @@ void FlowMeter::begin(isrFunctionPointer action) {
     // And attach interrupt watches to meter PINs
     attachInterrupt(digitalPinToInterrupt(_pin), _isrCallback, FALLING);
 
-    pulseCounter = 0;
+    _pulseCounter = 0;
 }
 
 void FlowMeter::onFlowChanged(FlowMeter::callback_t callback) {
 	mFlowChangedCallback = callback;
 }
 
+void ICACHE_RAM_ATTR FlowMeter::counter() {
+  _pulseCounter++;
+}
+
+// Algorithm is based on https://www.instructables.com/id/How-to-Use-Water-Flow-Sensor-Arduino-Tutorial/
 void FlowMeter::loop() {
   if((millis() - _oldTime) > 1000) // Only process counters once per second
   {
@@ -33,7 +38,7 @@ void FlowMeter::loop() {
     // that to scale the output. We also apply the calibrationFactor to scale the output
     // based on the number of pulses per second per units of measure (litres/minute in
     // this case) coming from the sensor.
-    flowRate = ((1000.0 / (millis() - _oldTime)) * pulseCounter) / _calibrationFactor;
+    flowRate = ((1000.0 / (millis() - _oldTime)) * _pulseCounter) / _calibrationFactor;
 
     // Note the time this processing pass was executed. Note that because we've
     // disabled interrupts the millis() function won't actually be incrementing right
@@ -49,24 +54,12 @@ void FlowMeter::loop() {
     // Add the millilitres passed in this second to the cumulative total
     totalMilliLitres += flowMilliLitres;
 
-    if(flowRate > 0) {
-      // Print the flow rate for this second in litres / minute
-      Serial.printf("[Valve 1] Flow rate: %.2f L/min", flowRate);
-
-      // Print the number of litres flowed in this second
-      Serial.printf("  Current Liquid Flowing: %d mL/sec", flowMilliLitres); // Output separator
-
-      // Print the cumulative total of litres flowed since starting
-      Serial.printf("  Output Liquid Quantity: %lu mL", totalMilliLitres); // Output separator
-      Serial.println();
-    }
-
     if(flowRate > 0 && mFlowChangedCallback) {
         mFlowChangedCallback(_pin);
     }
 
     // Reset the pulse counter so we can start incrementing again
-    pulseCounter = 0;
+    _pulseCounter = 0;
 
     // Enable the interrupt again now that we've finished sending output
     attachInterrupt(digitalPinToInterrupt(_pin), _isrCallback, FALLING);

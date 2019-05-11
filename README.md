@@ -51,3 +51,7 @@ Command topic accepts these state request changes and accepts both string `ON`, 
 | ------   | --- |
 | Running     | `1` or `ON`  |
 | Not running | `0` or `OFF` |
+
+### VS Code tips
+
+You can run your task through Quick Open (`Ctrl`+`P`) by typing `task`, Space and the command name.

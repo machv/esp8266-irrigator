@@ -36,25 +36,27 @@ function updateUi(jsonText) {
     var jsonResponse = JSON.parse(jsonText);
 
     if(jsonResponse.relays) {
-        gebi("a").innerHTML = jsonResponse.relays.length;
+        //gebi("a").innerHTML = jsonResponse.relays.length;
         for(var i = 0; i < jsonResponse.relays.length; i++) {
             let relay = jsonResponse.relays[i];
             
             gebi("r" + i + "_state").innerHTML = relay.state ? "ON" : "OFF";
             
             clearInterval(intervals[i]);
-            if(relay.timer > 0) {
-                gebi("r" + i + "_timerWhen").innerHTML = secondsToString(relay.timer);
+            let timerElement = gebi("r" + i + "_timerCountdown");
+            if(timerElement) {
+                if(relay.timer > 0) {
+                    timerElement.innerHTML = secondsToString(relay.timer);
 
-                let el = gebi("r" + i + "_timer");
-                intervals[i] = startTimer(relay.timer, el);
-            } else {
-                gebi("r" + i + "_timerWhen").innerHTML = "";
+                    intervals[i] = startTimer(relay.timer, timerElement);
+                } else {
+                    timerElement.innerHTML = "";
+                }
             }
 
             let btn = gebi('r' + i + "_btn");
             btn.innerHTML = relay.state ? "Turn OFF" : "Turn ON";
-            btn.className = relay.state ? "button button-on" ? "button button-off";
+            btn.className = relay.state ? "button button-on" : "button button-off";
 
             for (let key in relay) {
                 if(key == "state" || key == "timer")
@@ -78,14 +80,18 @@ function refresher(interval) {
     if (x != null) { 
         // Abort if no response
         x.abort();
-    }             
-    x = new XMLHttpRequest();
-    x.onreadystatechange = function() {
-        if(x.readyState == 4 && x.status == 200) {
-            updateUi(x.responseText);
-        }
-    };
-    x.open('GET','/api/current', true);
-    x.send();
+    }    
+    
+    if (document.hasFocus()) {
+        x = new XMLHttpRequest();
+        x.onreadystatechange = function() {
+            if(x.readyState == 4 && x.status == 200) {
+                updateUi(x.responseText);
+            }
+        };
+        x.open('GET','/api/current', true);
+        x.send();
+    } else console.log("Skipping as not focused");
+
     lt = setTimeout(refresher, refresherInterval); 
 }

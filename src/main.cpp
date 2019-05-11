@@ -60,7 +60,10 @@ FlowMeter meters[RELAYS_COUNT] = {
 
 // The hall-effect flow sensor outputs approximately 4.5 pulses per second per
 // litre/minute of flow.
-float calibrationFactor = 4.5;
+//float calibrationFactor = 4.5;
+// https://github.com/sekdiy/FlowMeter/wiki/Properties
+// For YF-B5 sensor (f = 6.6 x Q)
+float calibrationFactor = 6.6;
 
 // millis when relays should be turned off
 unsigned long relayTimeoutWhen[RELAYS_COUNT];
@@ -75,10 +78,14 @@ File GetFile(String fileName) {
 
 // Configuration handling
 void readConfigurationFile() {
+  Serial.println("[CONFIG] Reading configuration.");
+
   // set defaults
   for(int i = 0; i < RELAYS_COUNT; i++) {
-    Config.relays[i].name = String("Relay " + i);
+    Config.relays[i].name = String("Relay " + String(i + 1));
     Config.relays[i].timeout = 0;
+
+    Serial.println(Config.relays[i].name);
   }
 
   // read config file
@@ -160,6 +167,12 @@ void tickStatusLed() {
 }
 
 void toggleRelay(int id) {
+  if(id >= RELAYS_COUNT) {
+    Serial.printf("[RELAY] Wrong relay ID (%i) passed, ignoring.", id);
+    Serial.println();
+    return;
+  }
+  
   uint8_t relayPin = RELAY_PINS[id];
   uint8_t ledPin = LED_PINS[id];
   String channel = mqttTopicRelayStatus[id];
@@ -167,7 +180,7 @@ void toggleRelay(int id) {
   int currentValue = digitalRead(relayPin);
   int newValue = !currentValue;
 
-  Serial.printf("Toggling relay #%i from %i to %i", id, currentValue, newValue);
+  Serial.printf("Toggling relay #%i from %i to %i.", id, currentValue, newValue);
   Serial.println();
 
   // Do the toggle
@@ -437,8 +450,8 @@ String generateJsonApiResponse() {
       relay["timeout"] = (relayTimeoutWhen[i] - millis()) / 1000;
     }
     relay["state"] = relayState[i];
-    relay["flowMilliLitres"] = meters[i].flowMilliLitres;
-    relay["totalMilliLitres"] = meters[i].totalMilliLitres;
+    relay["flowMilliLitres"] = meters[i].flowMilliLitres / 1000.0;
+    relay["totalMilliLitres"] = meters[i].totalMilliLitres / 1000.0;
     relay["flowRate"] = meters[i].flowRate;
   }
 
@@ -461,7 +474,7 @@ String generateHomepageHtml(){
 
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr += "<title>Zavlažovač</title>\n";
+  ptr += "<title>Irrigation</title>\n";
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
   ptr += "<script type=\"text/javascript\" src=\"scripts.js\"></script>\n";
   
@@ -473,13 +486,13 @@ String generateHomepageHtml(){
       unsigned long remainingSecondsTimer = (relayTimeoutWhen[i] - millis()) / 1000;
       ptr += ""
              "    timerSeconds = " + String(remainingSecondsTimer) + ";\n"
-             "    display = document.querySelector('#r" + String(i) + "_timer');\n"
+             "    display = document.querySelector('#r" + String(i) + "_timerCountdown');\n"
              "    intervals[" + String(i) + "] = startTimer(timerSeconds, display);\n";
     }
-  }
+  } 
   ptr += ""
          "    // start updating of the current UI values\n"
-         "    refresher(5000);\n"
+         "    refresher(10000); // in ms\n"
          "  };\n";
   ptr += "</script>\n";
   ptr += "</head>\n";
@@ -493,12 +506,12 @@ String generateHomepageHtml(){
     ptr += "<h2>" + Config.relays[i].name + "</h2>";
 
     //if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
-    ptr += "<h3 id=\"r" + String(i) + "_timer\"></h3>";
+    ptr += "<h3 id=\"r" + String(i) + "_timerCountdown\"></h3>";
     //}
 
     ptr += "<table>";
     ptr += "<tr>"
-          "<td colspan=\"2\" id=\"r" + String(i) + "_state\" class=\"settings-cell relay-state\">";
+          "<td colspan=\"2\" id=\"r" + String(i) + "_state\" class=\"relay-state\">";
 
     if(relayState[i] == true) {
       ptr += "ON";
@@ -536,22 +549,31 @@ String generateHomepageHtml(){
     ptr += "</span> L/min</td>"
            "</tr>"
            "<tr>"
-           "<th>Current Liquid Flowing:</th>"
-           "<td><span id=\"r" + String(i) + "_flowMilliLitres\">" + String(meters[i].flowMilliLitres) + "</span> mL/Sec</td>"
+           "<th>Current flow:</th>"
+           "<td><span id=\"r" + String(i) + "_flowMilliLitres\">" + String(meters[i].flowMilliLitres / 1000.0) + "</span> L/sec</td>"
            "</tr>"
            "<tr>"
-           "<th>Output Liquid Quantity:</th>"
-           "<td><span id=\"r" + String(i) + "_totalMilliLitres\">" + String(meters[i].totalMilliLitres) + "</span> mL</td>"
+           "<th>Total Quantity:</th>"
+           "<td><span id=\"r" + String(i) + "_totalMilliLitres\">" + String(meters[i].totalMilliLitres / 1000.0) + "</span> L</td>"
            "</tr>";
     ptr += "</table>";
     ptr += "</div>";
   }
- 
-  ptr +="<hr>\n";
-  ptr +="<a class=\"button\" href=\"/config\">Configuration</a>\n";
 
-  ptr += "<p><form action='/restart' method='get' onsubmit='return confirm(\"Do you really want to restart the device?\");'>"
-        "<button name='restart' class='button button-danger'>Restart</button></form></p>";
+  //"<table>"
+         //"<tr>"
+         //"<td colspan=\"2\" class=\"settings-cell\">"
+  ptr += "<a style='display: inline-block' class=\"button button-danger\" href=\"/config\">Configuration</a>\n";
+         //"</td>"
+         //"</tr>";
+  /*
+  ptr += "<tr>"
+         "<td colspan=\"2\" class=\"settings-cell\">"
+         "<p><form action='/restart' method='get' onsubmit='return confirm(\"Do you really want to restart the device?\");'>"
+         "<button style='width: 100%' name='restart' class='button button-danger'>Restart</button></form></p>"
+         "</tr>";
+*/
+  ptr += "</table>";
 
   ptr +="</div></body>\n";
   ptr +="</html>\n";
@@ -609,13 +631,13 @@ void handle_saveConfig() {
 void handle_homepage() {
   server.send(200, "text/html", generateHomepageHtml()); 
 }
-
+/*
 void handle_restart() {
   server.send(200, "text/html", "<strong>Restarting the device...</strong>"); 
   delay(200);
-  ESP.restart();
+  ESP.reset();
 }
-
+*/
 void handle_toggle() {
   if(!server.hasArg("id")) {
     server.send(400, "text/html", "Missing required parameter ID.");
@@ -635,27 +657,29 @@ void handle_toggle() {
 }
 
 // Callback function to be called when the button is pressed.
+void onPressed0() {
+	Serial.println("Button 0 has been pressed.");
+  
+  toggleRelay(0);
+}
+
 void onPressed1() {
 	Serial.println("Button 1 has been pressed.");
+  
   toggleRelay(1);
 }
 
-void onPressed2() {
-	Serial.println("Button 2 has been pressed.");
-  toggleRelay(2);
+void ICACHE_RAM_ATTR meter0_triggered() {
+  meters[0].counter();
+
+  //Serial.printf("[FLOW] Flow meter 1 triggered, current counter = %d", meters[0]._pulseCounter);
+  //Serial.println();
 }
+void ICACHE_RAM_ATTR meter1_triggered() {
+  meters[1].counter();
 
-void meter0_triggered() {
-  meters[0].pulseCounter++;
-
-  Serial.printf("[FLOW] Flow meter 1 triggered, current counter = %d", meters[0].pulseCounter);
-  Serial.println();
-}
-void meter1_triggered() {
-  meters[1].pulseCounter++;
-
-  Serial.printf("[FLOW] Flow meter 2 triggered, current counter = %d", meters[1].pulseCounter);
-  Serial.println();
+  //Serial.printf("[FLOW] Flow meter 2 triggered, current counter = %d", meters[1]._pulseCounter);
+  //Serial.println();
 }
 
 void meter_flowChanged(uint8_t pin) {
@@ -675,7 +699,22 @@ void meter_flowChanged(uint8_t pin) {
     return;
   }
 
+  if(meters[meterIndex].flowRate > 0) {
+    // Print the flow rate for this second in litres / minute
+    Serial.printf("[Valve %i] Flow rate: %.2f L/min", meterIndex, meters[meterIndex].flowRate);
+
+    // Print the number of litres flowed in this second
+    Serial.printf("  Current Liquid Flowing: %d mL/sec", meters[meterIndex].flowMilliLitres); // Output separator
+
+    // Print the cumulative total of litres flowed since starting
+    Serial.printf("  Output Liquid Quantity: %lu mL", meters[meterIndex].totalMilliLitres); // Output separator
+    Serial.println();
+  }
+
   if(mqttClient.connected()) {
+    Serial.printf("[Valve %i] Reporting to MQTT", meterIndex);
+    Serial.println();
+
     String channelCurrent = String(Config.mqtt_channel_prefix + meterIndex + "/currentFlow");
     String valueCurrent = String(meters[meterIndex].flowRate);
     mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
@@ -696,10 +735,10 @@ void setup() {
 
   // Initialize the buttons
 	buttons[0].begin();
-  buttons[0].onPressed(onPressed1);
+  buttons[0].onPressed(onPressed0);
   
   buttons[1].begin();
-  buttons[1].onPressed(onPressed2);
+  buttons[1].onPressed(onPressed1);
 	
   // Initialize GPIO PINs
   pinMode(PinLed1, OUTPUT);
@@ -759,7 +798,7 @@ void setup() {
   server.on("/config", HTTP_GET, handle_pageConfig);
   server.on("/config", HTTP_POST, handle_saveConfig);
   server.on("/api/current", handle_api);
-  server.on("/restart", handle_restart);
+  //server.on("/restart", handle_restart);
   server.on("/toggle", handle_toggle);
   server.on("/style.css", handle_cssFile);
   server.on("/scripts.js", handle_jsFile);
