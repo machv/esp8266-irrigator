@@ -12,18 +12,6 @@ function secondsToString(duration) {
     return hours + ':' + minutes + ':' + seconds;
 }
 
-function startTimer(duration, display) {
-    var timer = duration, minutes, seconds;
-    interval = setInterval(function () {
-        display.textContent = secondsToString(duration);
-
-        if (--timer < 0)
-            display.textContent = "";
-    }, 1000);
-
-    return interval;
-}
-
 function gebi(s) {
     return document.getElementById(s);
 }
@@ -31,26 +19,47 @@ function gebi(s) {
 var refresherInterval = 2000; // for UI changes
 var intervals = {}; // for timer countdowns
 var x = null, lt;
+var timeouts = {}; // for countdowns
+
+function processCountdowns() {    
+    for (let key in timeouts) {
+        let element = gebi('r' + key + "_timerCountdown");
+        if(timeouts[key] > 0) {
+            element.textContent = secondsToString(timeouts[key]);
+        } else {
+            element.textContent = "";
+        }
+
+        timeouts[key]--;
+    }
+}
+
+function updateRelayCountdown(relay, secondsRemaining) {
+    console.log("Updating timeout for relay #" + relay + " to " + secondsRemaining + " seconds.");
+    timeouts[relay] = secondsRemaining;
+}
+
+function startCountdowns() {
+    setInterval(processCountdowns, 1000);
+}
 
 function updateUi(jsonText) {
     var jsonResponse = JSON.parse(jsonText);
 
     if(jsonResponse.relays) {
-        //gebi("a").innerHTML = jsonResponse.relays.length;
         for(var i = 0; i < jsonResponse.relays.length; i++) {
             let relay = jsonResponse.relays[i];
             
             gebi("r" + i + "_state").innerHTML = relay.state ? "ON" : "OFF";
             
-            clearInterval(intervals[i]);
-            let timerElement = gebi("r" + i + "_timerCountdown");
-            if(timerElement) {
-                if(relay.timer > 0) {
-                    timerElement.innerHTML = secondsToString(relay.timer);
+            if(relay.hasOwnProperty("timeout")) {
+                updateRelayCountdown(i, relay.timeout);
 
-                    intervals[i] = startTimer(relay.timer, timerElement);
-                } else {
-                    timerElement.innerHTML = "";
+                let timerElement = gebi("r" + i + "_timerCountdown");
+                if(timerElement) {
+                    if(relay.timeout <= 0) {
+                        timerElement.innerHTML = "";
+                    }
                 }
             }
 
@@ -63,7 +72,7 @@ function updateUi(jsonText) {
                     continue;
 
                 if (relay.hasOwnProperty(key)) {
-                    console.log(key + " = " + relay[key]);
+                    console.log("[" + i + "] " + key + " = " + relay[key]);
                     let elem = gebi('r' + i + "_" + key);
                     if(elem)
                         elem.innerHTML = relay[key];
@@ -89,9 +98,9 @@ function refresher(interval) {
                 updateUi(x.responseText);
             }
         };
-        x.open('GET','/api/current', true);
+        x.open('GET', '/api/current', true);
         x.send();
-    } else console.log("Skipping as not focused");
+    } else console.log("Skipping API update as document is not focused.");
 
     lt = setTimeout(refresher, refresherInterval); 
 }

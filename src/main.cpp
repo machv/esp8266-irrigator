@@ -476,23 +476,21 @@ String generateHomepageHtml(){
   ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
   ptr += "<title>Irrigation</title>\n";
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
-  ptr += "<script type=\"text/javascript\" src=\"scripts.js\"></script>\n";
+  ptr += "<script type=\"text/javascript\" src=\"/scripts.js\"></script>\n";
   
   ptr += "<script type=\"text/javascript\">\n"
-         "var timerSeconds, display;\n"
          "  window.onload = function () {\n";
   for(int i = 0; i < RELAYS_COUNT; i++) {
     if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
       unsigned long remainingSecondsTimer = (relayTimeoutWhen[i] - millis()) / 1000;
-      ptr += ""
-             "    timerSeconds = " + String(remainingSecondsTimer) + ";\n"
-             "    display = document.querySelector('#r" + String(i) + "_timerCountdown');\n"
-             "    intervals[" + String(i) + "] = startTimer(timerSeconds, display);\n";
+      ptr += "    updateRelayCountdown(" + String(i) + ", " + String(remainingSecondsTimer) + ");\n";
     }
   } 
   ptr += ""
          "    // start updating of the current UI values\n"
          "    refresher(10000); // in ms\n"
+         "    // start timers\n"
+         "    startCountdowns();\n"
          "  };\n";
   ptr += "</script>\n";
   ptr += "</head>\n";
@@ -505,9 +503,7 @@ String generateHomepageHtml(){
     ptr += "<div>";
     ptr += "<h2>" + Config.relays[i].name + "</h2>";
 
-    //if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
     ptr += "<h3 id=\"r" + String(i) + "_timerCountdown\"></h3>";
-    //}
 
     ptr += "<table>";
     ptr += "<tr>"
@@ -529,7 +525,7 @@ String generateHomepageHtml(){
       ptr += "<a id=\"r" + String(i) + "_btn\" class=\"button button-off\" href=\"/toggle?id=" + String(i) + "\">Turn ON</a>";
     }
     ptr += "</td></tr>";
-
+/*
     if(Config.relays[i].timeout > 0 && relayTimeoutWhen[i] > 0) {
       ptr += "<tr>"
           "<th>Timer off after:</th>"
@@ -537,7 +533,7 @@ String generateHomepageHtml(){
       ptr += millisToString(relayTimeoutWhen[i] - millis());
       ptr += "</td></tr>";
     }
-
+*/
       ptr += "<tr>"
           "<th>Flow rate:</th>"
           "<td><span id=\"r" + String(i) + "_flowRate\">";
@@ -566,13 +562,13 @@ String generateHomepageHtml(){
   ptr += "<a style='display: inline-block' class=\"button button-danger\" href=\"/config\">Configuration</a>\n";
          //"</td>"
          //"</tr>";
-  /*
+
   ptr += "<tr>"
          "<td colspan=\"2\" class=\"settings-cell\">"
          "<p><form action='/restart' method='get' onsubmit='return confirm(\"Do you really want to restart the device?\");'>"
-         "<button style='width: 100%' name='restart' class='button button-danger'>Restart</button></form></p>"
+         "<button name='restart' class='button button-danger'>Restart</button></form></p>"
          "</tr>";
-*/
+
   ptr += "</table>";
 
   ptr +="</div></body>\n";
@@ -631,13 +627,13 @@ void handle_saveConfig() {
 void handle_homepage() {
   server.send(200, "text/html", generateHomepageHtml()); 
 }
-/*
+
 void handle_restart() {
   server.send(200, "text/html", "<strong>Restarting the device...</strong>"); 
   delay(200);
-  ESP.reset();
+  ESP.restart();
 }
-*/
+
 void handle_toggle() {
   if(!server.hasArg("id")) {
     server.send(400, "text/html", "Missing required parameter ID.");
@@ -798,7 +794,7 @@ void setup() {
   server.on("/config", HTTP_GET, handle_pageConfig);
   server.on("/config", HTTP_POST, handle_saveConfig);
   server.on("/api/current", handle_api);
-  //server.on("/restart", handle_restart);
+  server.on("/restart", handle_restart);
   server.on("/toggle", handle_toggle);
   server.on("/style.css", handle_cssFile);
   server.on("/scripts.js", handle_jsFile);
