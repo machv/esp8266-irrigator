@@ -1,4 +1,8 @@
 function secondsToString(duration) {
+    if(duration == 0) {
+        return "00:00:00";
+    }
+    
     var sec_num = duration, hours, minutes, seconds;
 
     var hours   = Math.floor(sec_num / 3600);
@@ -16,27 +20,23 @@ function gebi(s) {
     return document.getElementById(s);
 }
 
-var refresherInterval = 2000; // for UI changes
-var intervals = {}; // for timer countdowns
-var x = null, lt;
-var timeouts = {}; // for countdowns
-
+var countdowns = {}; // for countdowns
 function processCountdowns() {    
-    for (let key in timeouts) {
+    for (let key in countdowns) {
         let element = gebi('r' + key + "_timerCountdown");
-        if(timeouts[key] > 0) {
-            element.textContent = secondsToString(timeouts[key]);
+        if(countdowns[key] > 0) {
+            element.textContent = secondsToString(countdowns[key]);
         } else {
             element.textContent = "";
         }
 
-        timeouts[key]--;
+        countdowns[key]--;
     }
 }
 
 function updateRelayCountdown(relay, secondsRemaining) {
     console.log("Updating timeout for relay #" + relay + " to " + secondsRemaining + " seconds.");
-    timeouts[relay] = secondsRemaining;
+    countdowns[relay] = secondsRemaining;
 }
 
 function startCountdowns() {
@@ -49,9 +49,7 @@ function updateUi(jsonText) {
     if(jsonResponse.relays) {
         for(var i = 0; i < jsonResponse.relays.length; i++) {
             let relay = jsonResponse.relays[i];
-            
-            gebi("r" + i + "_state").innerHTML = relay.state ? "ON" : "OFF";
-            
+                  
             if(relay.hasOwnProperty("timeout")) {
                 updateRelayCountdown(i, relay.timeout);
 
@@ -68,8 +66,10 @@ function updateUi(jsonText) {
             btn.className = relay.state ? "button button-on" : "button button-off";
 
             for (let key in relay) {
-                if(key == "state" || key == "timer")
+                if(key == "state") {
+                    gebi("r" + i + "_state").innerHTML = relay.state ? "ON" : "OFF";
                     continue;
+                }
 
                 if (relay.hasOwnProperty(key)) {
                     console.log("[" + i + "] " + key + " = " + relay[key]);
@@ -82,6 +82,8 @@ function updateUi(jsonText) {
     }
 }
 
+var refresherInterval = 2000; // for UI changes
+var x = null, lt;
 function refresher(interval) {
     if(interval > 0) {
         refresherInterval = interval;
