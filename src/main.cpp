@@ -53,22 +53,19 @@ EasyButton buttons[RELAYS_COUNT] = {
   EasyButton(PinButton2) 
 };
 
-FlowMeter meters[RELAYS_COUNT] = {
-  FlowMeter(PinMeter1),
-  FlowMeter(PinMeter2)
-};
-
-// The hall-effect flow sensor outputs approximately 4.5 pulses per second per
-// litre/minute of flow.
-//float calibrationFactor = 4.5;
 // https://github.com/sekdiy/FlowMeter/wiki/Properties
 // For YF-B5 sensor (f = 6.6 x Q)
-float calibrationFactor = 6.6;
+const float flowMeterCalibrationFactor = 6.6; 
+
+FlowMeter meters[RELAYS_COUNT] = {
+  FlowMeter(PinMeter1, flowMeterCalibrationFactor),
+  FlowMeter(PinMeter2, flowMeterCalibrationFactor)
+};
 
 // millis when relays should be turned off
 unsigned long relayTimeoutWhen[RELAYS_COUNT];
 
-File GetFile(String fileName) {
+File getFile(String fileName) {
   File file;
   if (SPIFFS.exists(fileName)) {
     file = SPIFFS.open(fileName, "r");
@@ -344,13 +341,13 @@ char * millisToString(unsigned long millis) {
 }
 
 void handle_cssFile() {
-  File cssFile = GetFile(CSS_FILE);
+  File cssFile = getFile(CSS_FILE);
   server.streamFile(cssFile, "text/css");
   cssFile.close();
 }
 
 void handle_jsFile() {
-  File jsFile = GetFile(JS_FILE);
+  File jsFile = getFile(JS_FILE);
   server.streamFile(jsFile, "text/css");
   jsFile.close();
 }

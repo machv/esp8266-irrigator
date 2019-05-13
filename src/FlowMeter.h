@@ -24,6 +24,7 @@ class FlowMeter
         volatile uint _pulseCounter;
         FlowMeter() {};
         FlowMeter(uint8_t pin) : _pin(pin) {}
+        FlowMeter(uint8_t pin, float calibrationFactor) : _pin(pin), _calibrationFactor(calibrationFactor) {}
 	    ~FlowMeter() {};
         void begin(uint8_t pin, isrFunctionPointer action);
         void begin(isrFunctionPointer action);
@@ -33,7 +34,7 @@ class FlowMeter
     private:
         isrFunctionPointer _isrCallback;
         uint8_t _pin;
-        float _calibrationFactor = 4.5;
+        float _calibrationFactor = 6.6; // default value for YF-B5 sensor
         unsigned long _oldTime;
 
         // CALLBACKS
