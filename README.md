@@ -19,7 +19,7 @@ HW Parts used:
 
 Last will topic is used to detect availability, messages sent there are with retain tag enabled.
 ```
-{MQTT_PREFIX}/LWT
+{MQTT_PREFIX}/status
 ```
 | Payload | Value | Retain |
 | ------   | --- | -- |
@@ -52,6 +52,23 @@ Command topic accepts these state request changes and accepts both string `ON`, 
 | Running     | `1` or `ON`  |
 | Not running | `0` or `OFF` |
 
+### Flow meter channels
+
+Flow meter updates are sent in format:
+
+```
+{MQTT_PREFIX}/{RELAY_INDEX}/{METRIC}
+```
+
+where `{METRIC}` is from:
+
+| Metric | Type | Unit |
+| ------  | ---  | --- |
+| `currentFlow` |  `float`  | L/s   |
+| `totalFlow` | `float` | ml |
+
 ### VS Code tips
 
-You can run your task through Quick Open (`Ctrl`+`P`) by typing `task`, Space and the command name.
+You can run your task through Quick Open (<kbd>Ctrl</kbd>+<kbd>P</kbd>) by typing `task`, Space and the command name.
+
+Build a solution using <kbd>Ctrl</kbd>+<kbd>Alt</kbd>+<kbd>B</kbd>
