@@ -9,6 +9,9 @@
 #include "settings.h" // Application settings
 #include "FlowMeter.h" // Flow meter
 
+// How often send periodic flow meter updates (30 sec.)
+#define FLOW_REPORT_INTERVAL (30 * 1000) 
+
 // HW mapping
 #define PinMeter1 D5
 #define PinMeter2 D6
@@ -64,6 +67,9 @@ FlowMeter meters[RELAYS_COUNT] = {
 
 // millis when relays should be turned off
 unsigned long relayTimeoutWhen[RELAYS_COUNT];
+
+// flow meter updates
+unsigned long lastFlowMeterUpdate[RELAYS_COUNT];
 
 File getFile(String fileName) {
   File file;
@@ -704,7 +710,7 @@ void meter_flowChanged(uint8_t pin) {
     Serial.println();
   }
 
-  if(mqttClient.connected()) {
+  if(mqttClient.connected() && ((millis() - lastFlowMeterUpdate[meterIndex]) > FLOW_REPORT_INTERVAL)) {
     Serial.printf("[Valve %i] Reporting to MQTT", meterIndex);
     Serial.println();
 
