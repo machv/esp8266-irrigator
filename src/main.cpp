@@ -260,8 +260,8 @@ void setupMqtt(int retries) {
   mqttLwtTopic = String(Config.mqtt_channel_prefix + "status");
   for(int i = 0; i < RELAYS_COUNT; i++) {
     // in MQTT relays are numbered starting with 1, not 0
-    mqttTopicRelayStatus[i] = String(Config.mqtt_channel_prefix + "state/" + (i + 1));
-    mqttTopicRelayCommand[i] = String(Config.mqtt_channel_prefix + "command/" + (i + 1)) + "/power";
+    mqttTopicRelayStatus[i] = String(Config.mqtt_channel_prefix + (i + 1) + "/state");
+    mqttTopicRelayCommand[i] = String(Config.mqtt_channel_prefix + (i + 1) + "command/power");
   }
 
   mqttClient.setServer(Config.mqtt_server.c_str(), Config.mqtt_port);
@@ -714,11 +714,11 @@ void meter_flowChanged(uint8_t pin) {
     Serial.printf("[Valve %i] Reporting to MQTT", meterIndex);
     Serial.println();
 
-    String channelCurrent = String(Config.mqtt_channel_prefix + meterIndex + "/currentFlow");
+    String channelCurrent = String(Config.mqtt_channel_prefix + (meterIndex + 1) + "/currentFlow");
     String valueCurrent = String(meters[meterIndex].flowRate);
     mqttClient.publish(channelCurrent.c_str(), valueCurrent.c_str());
 
-    String channelTotal = String(Config.mqtt_channel_prefix + meterIndex + "/totalFlow");
+    String channelTotal = String(Config.mqtt_channel_prefix + (meterIndex + 1) + "/totalFlow");
     String valueTotal = String(meters[meterIndex].totalMilliLitres);
     mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
   }
