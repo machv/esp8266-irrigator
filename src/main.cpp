@@ -12,6 +12,9 @@
 // How often send periodic flow meter updates (30 sec.)
 #define FLOW_REPORT_INTERVAL (30 * 1000) 
 
+// if defined /config.json endpoint would be exposed via internal web server for troubleshooting/backup
+#undef DEBUG_CONFIG
+
 // HW mapping
 #define PinMeter1 D5
 #define PinMeter2 D6
@@ -119,7 +122,7 @@ void readConfigurationFile() {
         int i = 0;
         for(JsonObject relay : relays) {
           Config.relays[i].name = relay["name"].as<String>();
-          Config.relays[i].timeout = json["timeout"] | 0;
+          Config.relays[i].timeout = relay["timeout"] | 0;
           i++;
         }
       }
@@ -346,6 +349,14 @@ char * millisToString(unsigned long millis) {
   return str;
 }
 
+#ifdef DEBUG_CONFIG
+void handle_configFile() {
+  File configFile = getFile("/config.json");
+  server.streamFile(configFile, "application/json");
+  configFile.close(); 
+}
+#endif
+
 void handle_cssFile() {
   File cssFile = getFile(CSS_FILE);
   server.streamFile(cssFile, "text/css");
@@ -367,11 +378,11 @@ String generateSettingsHtml(){
 
   String ptr = "<!DOCTYPE html> <html>\n";
   ptr += "<head><meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0, user-scalable=no\">\n";
-  ptr += "<title>Zavlažovač / Settings</title>\n";
+  ptr += "<title>Irrigation / Settings</title>\n";
   ptr += "<link href=\"/style.css\" type=\"text/css\" rel=\"stylesheet\"/>\n";
   ptr += "</head>\n";
   ptr += "<body><div class=\"page\">\n";
-  ptr += "<h1>Zavlažovač</h1>\n";
+  ptr += "<h1>Irrigation</h1>\n";
   ptr += "<h2>Settings</h2>\n";
   
   if(server.hasArg("saved")) {
@@ -500,10 +511,12 @@ String generateHomepageHtml(){
   ptr += "<body>\n<div class=\"page\">";
   ptr += "<h1>Irrigation</h1>\n";
   
+  ptr += "<div class='row valve-row'>\n";
+
   unsigned int frac;
 
   for(int i = 0; i< RELAYS_COUNT; i++) {
-    ptr += "<div>";
+    ptr += "<div class='col-6'>";
     ptr += "<h2>" + Config.relays[i].name + "</h2>";
 
     ptr += "<h3 id=\"r" + String(i) + "_timerCountdown\"></h3>";
@@ -558,6 +571,8 @@ String generateHomepageHtml(){
     ptr += "</table>";
     ptr += "</div>";
   }
+
+  ptr += "</div>"; // class=row
 
   //"<table>"
          //"<tr>"
@@ -721,6 +736,8 @@ void meter_flowChanged(uint8_t pin) {
     String channelTotal = String(Config.mqtt_channel_prefix + (meterIndex + 1) + "/totalFlow");
     String valueTotal = String(meters[meterIndex].totalMilliLitres);
     mqttClient.publish(channelTotal.c_str(), valueTotal.c_str());
+
+    lastFlowMeterUpdate[meterIndex] = millis();
   }
 }
 
@@ -800,6 +817,9 @@ void setup() {
   server.on("/restart", handle_restart);
   server.on("/toggle", handle_toggle);
   server.on("/style.css", handle_cssFile);
+  #ifdef DEBUG_CONFIG
+  server.on("/config.json", handle_configFile);
+  #endif
   server.on("/scripts.js", handle_jsFile);
   server.onNotFound(handle_notFound);  
   server.begin();
